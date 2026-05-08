@@ -147,7 +147,7 @@ const Footer = () => (
 
 const CodingTestCaseResults = ({ 
   testCaseResults, 
-  problems, 
+  problems = [], 
   problemId, 
   isTimeOver, 
   isAdmin = false 
@@ -162,7 +162,7 @@ const CodingTestCaseResults = ({
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {testCaseResults && testCaseResults.length > 0 ? (
         testCaseResults.map((tr, trIdx) => {
-          const problem = problems.find(p => p.id === problemId);
+          const problem = Array.isArray(problems) ? problems.find(p => p.id === problemId) : null;
           const tc = problem?.test_cases?.[trIdx];
           
           const showDetails = isAdmin || !tr.is_hidden || isTimeOver;
@@ -2130,9 +2130,14 @@ const AdminDashboard = () => {
   const parsedResponses = useMemo(() => {
     if (!selectedSubmission || !selectedSubmission.responses) return {};
     try {
-      return typeof selectedSubmission.responses === 'string' 
-        ? JSON.parse(selectedSubmission.responses) 
-        : selectedSubmission.responses;
+      const resp = selectedSubmission.responses;
+      if (typeof resp === 'string') {
+        const firstPass = JSON.parse(resp);
+        // Handle double stringification
+        if (typeof firstPass === 'string') return JSON.parse(firstPass);
+        return firstPass;
+      }
+      return resp;
     } catch (e) {
       console.error("Error parsing responses:", e);
       return {};
@@ -2141,19 +2146,26 @@ const AdminDashboard = () => {
 
   useEffect(() => {
     if (selectedSubmission) {
-      if (selectedSubmission.test_type === 'coding') {
-        // Fetch problems for the test of the selected submission
+      const isCoding = selectedSubmission.test_type === 'coding' || (Array.isArray(selectedSubmission.coding_details) && selectedSubmission.coding_details.length > 0);
+      if (isCoding) {
+        // Fetch problems for coding test
         fetch(`/api/tests/${selectedSubmission.test_id}/problems`)
           .then(res => res.json())
-          .then(data => setSelectedSubmissionProblems(data))
-          .catch(err => console.error("Error fetching problems for submission detail:", err));
+          .then(data => setSelectedSubmissionProblems(Array.isArray(data) ? data : []))
+          .catch(err => {
+            console.error("Error fetching problems for submission detail:", err);
+            setSelectedSubmissionProblems([]);
+          });
         setSelectedSubmissionQuestions([]);
       } else {
         // Fetch questions for MCQ test
         fetch(`/api/tests/${selectedSubmission.test_id}/questions`)
           .then(res => res.json())
-          .then(data => setSelectedSubmissionQuestions(data))
-          .catch(err => console.error("Error fetching questions for submission detail:", err));
+          .then(data => setSelectedSubmissionQuestions(Array.isArray(data) ? data : []))
+          .catch(err => {
+            console.error("Error fetching questions for submission detail:", err);
+            setSelectedSubmissionQuestions([]);
+          });
         setSelectedSubmissionProblems([]);
       }
     } else {
@@ -2161,6 +2173,7 @@ const AdminDashboard = () => {
       setSelectedSubmissionQuestions([]);
     }
   }, [selectedSubmission]);
+
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -2772,7 +2785,7 @@ const AdminDashboard = () => {
                     </div>
                   </div>
 
-                  {selectedSubmission.coding_details && selectedSubmission.coding_details.length > 0 ? (
+                  {(selectedSubmission.test_type === 'coding' || (selectedSubmission.coding_details && selectedSubmission.coding_details.length > 0)) ? (
                     <div className="space-y-16">
                       <div className="flex items-center gap-4 mb-8">
                         <div className="h-px flex-1 bg-zinc-100" />
@@ -2783,7 +2796,7 @@ const AdminDashboard = () => {
                         <div className="h-px flex-1 bg-zinc-100" />
                       </div>
 
-                      {selectedSubmission.coding_details.map((detail, idx) => (
+                      {(selectedSubmission.coding_details || []).map((detail, idx) => (
                         <div key={idx} className="bg-white border-2 border-zinc-50 rounded-[2.5rem] overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.04)] mb-12">
                           <div className="px-10 py-6 bg-zinc-50/50 border-b border-zinc-100 flex flex-wrap justify-between items-center gap-6">
                              <div className="flex items-center gap-5">
@@ -6249,67 +6262,149 @@ const BankQuestionsManagement = () => {
 
 const ResultDetailView = ({ student }: { student: User }) => {
   const { testId } = useParams();
+  const navigate = useNavigate();
+  
   const [test, setTest] = useState<Test | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [problems, setProblems] = useState<CodingProblem[]>([]);
   const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const studentId = (student.student_id?.trim() || student.id.toString());
-    
-    fetch(`/api/tests`)
-      .then(res => res.json())
-      .then(testsData => {
-        const currentTest = testsData.find((t: any) => String(t.id) === String(testId));
+    const fetchAllData = async () => {
+      const studentIdStr = (student.student_id?.trim() || student.id.toString());
+      setLoading(true);
+      setError(null);
+      // Clear previous states
+      setTest(null);
+      setResult(null);
+      setQuestions([]);
+      setProblems([]);
+
+      try {
+        // Fetch all tests and find current 
+        const testsRes = await fetch('/api/tests');
+        if (!testsRes.ok) throw new Error("Failed to fetch test details");
+        const testsData = await testsRes.json();
+        const currentTest = testsData.find((t: any) => 
+          String(t.id) === String(testId) || 
+          String(t._id) === String(testId) ||
+          (t.title && t.title.toLowerCase().replace(/\s+/g, '-') === String(testId).toLowerCase())
+        );
+        
+        if (!currentTest) {
+          setError("Test not found");
+          setLoading(false);
+          return;
+        }
         setTest(currentTest);
 
-        const promises: Promise<any>[] = [
-          fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`).then(res => res.json())
-        ];
-
-        if (currentTest?.type === 'mcq') {
-          promises.push(fetch(`/api/tests/${testId}/questions`).then(res => res.json()));
-        } else if (currentTest?.type === 'coding') {
-          promises.push(fetch(`/api/tests/${testId}/problems`).then(res => res.json()));
-        }
-
-        return Promise.all(promises).then(([resultsData, detailsData]) => {
-          const currentResult = resultsData.find((r: any) => String(r.test_id) === String(testId));
-          setResult(currentResult);
-          if (currentTest?.type === 'mcq') {
-            setQuestions(detailsData);
-          } else {
-            setProblems(detailsData);
-          }
+        // Fetch user results
+        const resultsRes = await fetch(`/api/results?student_id=${encodeURIComponent(studentIdStr)}`);
+        if (!resultsRes.ok) throw new Error("Failed to fetch results");
+        const resultsData = await resultsRes.json();
+        
+        // Match result for this specific test
+        const currentResult = resultsData.find((r: any) => String(r.test_id) === String(testId));
+        if (!currentResult) {
+          setError("No result found for this test");
           setLoading(false);
-        });
-      })
-      .catch(err => {
-        console.error("Error fetching result details:", err);
+          return;
+        }
+        setResult(currentResult);
+
+        // Fetch based on type
+        const isCoding = currentTest.type === 'coding' || currentResult.test_type === 'coding' || (Array.isArray(currentResult.coding_details) && currentResult.coding_details.length > 0);
+        
+        if (isCoding) {
+          const problemsRes = await fetch(`/api/tests/${testId}/problems`);
+          if (problemsRes.ok) {
+            const problemsData = await problemsRes.json();
+            setProblems(Array.isArray(problemsData) ? problemsData : []);
+          }
+        } else {
+          const questionsRes = await fetch(`/api/tests/${testId}/questions`);
+          if (questionsRes.ok) {
+            const questionsData = await questionsRes.json();
+            setQuestions(Array.isArray(questionsData) ? questionsData : []);
+          }
+        }
+      } catch (err: any) {
+        console.error("Error in ResultDetailView:", err);
+        setError(err.message || "An unexpected error occurred");
+      } finally {
         setLoading(false);
-      });
-  }, [testId, student.student_id, student.id]);
+      }
+    };
 
-  const isTimeOver = test?.end_time ? new Date() > new Date(test.end_time) : false;
+    if (testId) {
+      fetchAllData();
+    }
+  }, [testId, student.student_id, student.id, student.username]);
 
-  if (loading) return <div className="flex items-center justify-center h-screen">Loading results...</div>;
-  if (!result || !test) return <div className="p-8 text-center">Result not found.</div>;
+  const isTimeOver = useMemo(() => {
+    return test?.end_time ? new Date() > new Date(test.end_time) : false;
+  }, [test]);
 
   const studentAnswers = useMemo(() => {
     if (!result || !result.responses) return {};
     try {
-      return typeof result.responses === 'string' 
-        ? JSON.parse(result.responses) 
-        : result.responses;
+      const resp = result.responses;
+      if (typeof resp === 'string') {
+        const firstPass = JSON.parse(resp);
+        if (typeof firstPass === 'string') return JSON.parse(firstPass);
+        return firstPass;
+      }
+      return resp;
     } catch (e) {
       console.error("Error parsing student answers:", e);
       return {};
     }
   }, [result]);
+
+  const isCodingResult = useMemo(() => {
+    if (!result) return false;
+    if (result.test_type === 'coding') return true;
+    if (Array.isArray(result.coding_details) && result.coding_details.length > 0) return true;
+    if (test?.type === 'coding') return true;
+    return false;
+  }, [result, test]);
+
+  const isMcqResult = !isCodingResult;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-zinc-500 font-medium">Crunching your scores...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !result || !test) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
+        <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 text-center max-w-md w-full">
+          <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <XCircle className="w-8 h-8 text-red-500" />
+          </div>
+          <h2 className="text-2xl font-bold text-zinc-900 mb-2 font-sans">Wait a moment!</h2>
+          <p className="text-zinc-600 mb-8 font-sans leading-relaxed">{error || "We couldn't find the results for this test. It might still be processing or was not submitted properly."}</p>
+          <button 
+            onClick={() => navigate('/student/dashboard')}
+            className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+          >
+            Return to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
   
-  const stats = test.type === 'mcq' ? questions.reduce((acc, q) => {
+  const stats = (isMcqResult && questions.length > 0) ? questions.reduce((acc, q) => {
     const selectedIdx = studentAnswers[q.id];
     if (selectedIdx === undefined) acc.skipped++;
     else if (selectedIdx === q.correct_option_index) acc.correct++;
@@ -6317,7 +6412,7 @@ const ResultDetailView = ({ student }: { student: User }) => {
     return acc;
   }, { correct: 0, incorrect: 0, skipped: 0 }) : null;
 
-  const codingStats = test.type === 'coding' ? (result.coding_details || []).reduce((acc, detail) => {
+  const codingStats = isCodingResult ? (result.coding_details || []).reduce((acc, detail) => {
     if (detail.status === 'Accepted') acc.passed++;
     else if (detail.status === 'Partially Accepted') acc.partial++;
     else acc.failed++;
@@ -6340,7 +6435,7 @@ const ResultDetailView = ({ student }: { student: User }) => {
             <p className="text-zinc-500">Completed on {new Date(result.completed_at).toLocaleString()}</p>
           </div>
           <div className="flex items-center gap-8">
-            {stats && (
+            {isMcqResult && stats && (
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="px-3 py-1 bg-emerald-50 rounded-lg">
                   <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Correct</div>
@@ -6356,7 +6451,7 @@ const ResultDetailView = ({ student }: { student: User }) => {
                 </div>
               </div>
             )}
-            {codingStats && (
+            {isCodingResult && codingStats && (
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="px-3 py-1 bg-emerald-50 rounded-lg">
                   <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Passed</div>
@@ -6379,16 +6474,16 @@ const ResultDetailView = ({ student }: { student: User }) => {
             </div>
           </div>
         </div>
-        {test.negative_marks === 1 && test.type === 'mcq' && (
+        {Boolean(test.negative_marks) && isMcqResult && (
           <div className="mt-6 p-3 bg-red-50 border border-red-100 rounded-xl text-red-700 text-xs flex items-center gap-2">
             <XCircle className="w-4 h-4" />
-            Negative marking was active for this test (-1 for each wrong answer). Final score is capped at 0.
+            Negative marking was active for this test. Final score is capped at 0.
           </div>
         )}
       </div>
 
       <div className="space-y-8">
-        {test.type === 'mcq' && questions.map((q, idx) => {
+        {isMcqResult && questions.map((q, idx) => {
           const selectedIdx = studentAnswers[q.id];
           const isCorrect = selectedIdx === q.correct_option_index;
 
@@ -6471,7 +6566,7 @@ const ResultDetailView = ({ student }: { student: User }) => {
           );
         })}
 
-        {test.type === 'coding' && (result.coding_details || []).map((detail, idx) => (
+        {isCodingResult && (result.coding_details || []).map((detail, idx) => (
           <div key={detail.problem_id} className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-6">
               <div className="flex justify-between items-start mb-6">

@@ -287,16 +287,41 @@ async function startServer() {
 
     // Questions & Options
     app.get("/api/tests/:id/questions", async (req, res) => {
-      const questions = await db.collection("questions").find({ test_id: req.params.id }).toArray();
-      res.json(questions.map((q: any) => ({ 
-        ...q, 
-        id: q._id.toString(),
-        options: (q.options || []).map((opt: any, i: number) => ({
-           ...opt,
-           id: `${q._id.toString()}-opt-${i}`,
-           question_id: q._id.toString()
-        }))
-      })));
+      try {
+        const testId = req.params.id;
+        
+        // Find the test first to get its formal ObjectId
+        const test = await db.collection("tests").findOne({
+          $or: [
+            { _id: ObjectId.isValid(testId) ? new ObjectId(testId) : null },
+            { id: testId }
+          ].filter(q => q !== null)
+        });
+
+        if (!test) {
+          return res.status(404).json({ error: "Test not found" });
+        }
+
+        const questions = await db.collection("questions").find({
+          $or: [
+            { test_id: test._id },
+            { test_id: test._id.toString() },
+            { test_id: test.id } // slug
+          ].filter(q => q)
+        }).toArray();
+
+        res.json(questions.map((q: any) => ({ 
+          ...q, 
+          id: q._id.toString(),
+          options: (q.options || []).map((opt: any, i: number) => ({
+             ...opt,
+             id: `${q._id.toString()}-opt-${i}`,
+             question_id: q._id.toString()
+          }))
+        })));
+      } catch (e: any) {
+        res.status(500).json({ error: e.message });
+      }
     });
 
     app.post("/api/tests/:id/questions", async (req, res) => {
@@ -432,8 +457,33 @@ async function startServer() {
 
     // Coding Problems
     app.get("/api/tests/:id/problems", async (req, res) => {
-      const problems = await db.collection("coding_problems").find({ test_id: req.params.id }).toArray();
-      res.json(problems.map((p: any) => ({ ...p, id: p._id.toString() })));
+      try {
+        const testId = req.params.id;
+        
+        // Find the test first to get its formal ObjectId
+        const test = await db.collection("tests").findOne({
+          $or: [
+            { _id: ObjectId.isValid(testId) ? new ObjectId(testId) : null },
+            { id: testId }
+          ].filter(q => q !== null)
+        });
+
+        if (!test) {
+          return res.status(404).json({ error: "Test not found" });
+        }
+
+        const problems = await db.collection("coding_problems").find({
+          $or: [
+            { test_id: test._id },
+            { test_id: test._id.toString() },
+            { test_id: test.id } // slug
+          ].filter(q => q)
+        }).toArray();
+        
+        res.json(problems.map((p: any) => ({ ...p, id: p._id.toString() })));
+      } catch (e: any) {
+        res.status(500).json({ error: e.message });
+      }
     });
 
     app.post("/api/tests/:id/problems", async (req, res) => {
@@ -919,6 +969,14 @@ async function startServer() {
         let finalScore = score;
         let processedCodingDetails = [];
 
+        // Fetch test details to persist metadata
+        const test = await db.collection("tests").findOne({ 
+          $or: [
+            { _id: new ObjectId(test_id) },
+            { id: test_id }
+          ]
+        });
+
         if (coding_details && coding_details.length > 0) {
           console.log(`Grading coding results for student ${student_name}...`);
           let totalPassedTotal = 0;
@@ -941,10 +999,7 @@ async function startServer() {
             totalPossibleCases += evaluation.total;
           }
           
-          // Recalculate score for coding tests: typically (passed / total) * 100 or similar
-          // This depends on the specific scoring logic intended.
-          // For now let's assume total score is number of problems fully passed or weighted by test cases.
-          // Let's use weighted score by test cases if it's a coding test.
+          // Recalculate score for coding tests
           if (totalPossibleCases > 0) {
             finalScore = Math.round((totalPassedTotal / totalPossibleCases) * total_questions);
           }
@@ -956,8 +1011,10 @@ async function startServer() {
           student_id,
           score: finalScore,
           total_questions,
-          responses: responses ? JSON.stringify(responses) : null,
+          responses: responses || null,
           coding_details: processedCodingDetails.length > 0 ? processedCodingDetails : null,
+          test_type: test?.type || (processedCodingDetails.length > 0 ? 'coding' : 'mcq'),
+          test_title: test?.title || 'Unknown Test',
           completed_at: new Date().toISOString()
         });
 
@@ -984,23 +1041,23 @@ async function startServer() {
         
         const results = await db.collection("results").aggregate([
           { $match: query },
-          { 
-            $addFields: { 
-              test_id_obj: { 
-                $convert: {
-                  input: "$test_id",
-                  to: "objectId",
-                  onError: null,
-                  onNull: null
-                }
-              } 
-            } 
-          },
           {
             $lookup: {
               from: "tests",
-              localField: "test_id_obj",
-              foreignField: "_id",
+              let: { testId: "$test_id" },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $or: [
+                        { $eq: ["$id", "$$testId"] },
+                        { $eq: ["$_id", { $convert: { input: "$$testId", to: "objectId", onError: null } }] },
+                        { $eq: [{ $toString: "$_id" }, "$$testId"] }
+                      ]
+                    }
+                  }
+                }
+              ],
               as: "test"
             }
           },
@@ -1016,14 +1073,19 @@ async function startServer() {
               responses: 1,
               coding_details: 1,
               completed_at: 1,
-              test_type: "$test.type",
-              test_title: { $ifNull: ["$test.title", "Unknown Test"] }
+              test_type: { $ifNull: ["$test_type", { $ifNull: ["$test.type", "mcq"] }] },
+              test_title: { $ifNull: ["$test_title", { $ifNull: ["$test.title", "Unknown Test"] }] },
+              test_data: "$test"
             }
           },
           { $sort: { completed_at: -1 } }
         ]).toArray();
 
-        res.json(results.map((r: any) => ({ ...r, id: r._id.toString() })));
+        res.json(results.map((r: any) => ({ 
+          ...r, 
+          id: r._id.toString(),
+          test_id: typeof r.test_id === 'object' && r.test_id?._id ? r.test_id._id.toString() : r.test_id?.toString()
+        })));
       } catch (e: any) {
         res.status(500).json({ error: e.message });
       }
@@ -1034,23 +1096,22 @@ async function startServer() {
       try {
         const results = await db.collection("results").aggregate([
           { $match: { test_id: id } },
-          { 
-            $addFields: { 
-              test_id_obj: { 
-                $convert: {
-                  input: "$test_id",
-                  to: "objectId",
-                  onError: null,
-                  onNull: null
-                }
-              } 
-            } 
-          },
           {
             $lookup: {
               from: "tests",
-              localField: "test_id_obj",
-              foreignField: "_id",
+              let: { testId: "$test_id" },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $or: [
+                        { $eq: ["$id", "$$testId"] },
+                        { $eq: ["$_id", { $convert: { input: "$$testId", to: "objectId", onError: null } }] }
+                      ]
+                    }
+                  }
+                }
+              ],
               as: "test"
             }
           },
@@ -1066,8 +1127,8 @@ async function startServer() {
               responses: 1,
               coding_details: 1,
               completed_at: 1,
-              test_type: "$test.type",
-              test_title: { $ifNull: ["$test.title", "Unknown Test"] }
+              test_type: { $ifNull: ["$test_type", { $ifNull: ["$test.type", "mcq"] }] },
+              test_title: { $ifNull: ["$test_title", { $ifNull: ["$test.title", "Unknown Test"] }] }
             }
           },
           { $sort: { score: -1, completed_at: 1 } },
