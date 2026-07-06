@@ -45,7 +45,15 @@ import {
   Terminal,
   Cpu,
   ChevronDown,
-  ArrowRight
+  ArrowRight,
+  Wifi,
+  WifiOff,
+  Lock,
+  Radio,
+  Rocket,
+  ExternalLink,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -62,26 +70,122 @@ const DEPARTMENTS = [
   'Mech'
 ];
 
+const getCodingEvaluationStatus = (
+  detail: Pick<CodingResultDetail, 'test_cases_passed' | 'total_test_cases'>
+): 'Accepted' | 'Partially Accepted' | 'Failed' => {
+  if (detail.test_cases_passed <= 0) return 'Failed';
+  if (detail.total_test_cases > 0 && detail.test_cases_passed >= detail.total_test_cases) return 'Accepted';
+  return 'Partially Accepted';
+};
+
+const useCurrentTimestamp = (intervalMs = 1000) => {
+  const [timestamp, setTimestamp] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setTimestamp(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return timestamp;
+};
+
+const hasContestEnded = (endTime: string | undefined, timestamp: number) => {
+  if (!endTime) return false;
+  const deadline = new Date(endTime).getTime();
+  return Number.isFinite(deadline) && timestamp >= deadline;
+};
+
+type NetworkEntry = {
+  ssid: string;
+  signal: number;
+  authentication: string;
+  encryption: string;
+  secured: boolean;
+  saved: boolean;
+  connected: boolean;
+};
+
+type UpdateStatus = {
+  state: string;
+  version?: string;
+  percent?: number;
+  message?: string;
+};
+
 // --- Components ---
 
-const Navbar = ({ user, onLogout, onChangePassword }: { user: User | null, onLogout: () => void, onChangePassword: () => void }) => (
+const Navbar = ({
+  user,
+  onLogout,
+  onChangePassword,
+  onOpenNetwork,
+  onCheckUpdates,
+  updateStatus
+}: {
+  user: User | null,
+  onLogout: () => void,
+  onChangePassword: () => void,
+  onOpenNetwork: () => void,
+  onCheckUpdates: () => void,
+  updateStatus: UpdateStatus
+}) => (
   <nav className="bg-white border-b border-zinc-200 sticky top-0 z-50">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex justify-between h-16 items-center">
         <div className="flex items-center gap-2.5 group cursor-default">
           <motion.div 
-            whileHover={{ rotate: -10, scale: 1.1 }}
-            className="w-9 h-9 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200 group-hover:shadow-indigo-300 transition-all duration-300"
+            whileHover={{ scale: 1.08 }}
+            className="w-10 h-10 flex items-center justify-center transition-all duration-300"
           >
-            <BookOpen className="text-white w-5 h-5" />
+            <img src="/adhi-arena-logo.png" alt="ADHI ARENA logo" className="w-full h-full object-contain" />
           </motion.div>
           <span className="text-xl font-display font-black tracking-tighter bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent drop-shadow-sm">
             ADHI ARENA
           </span>
         </div>
         
-        {user && (
-          <div className="flex items-center gap-6">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onOpenNetwork}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-zinc-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors"
+            title="View and connect to Wi-Fi networks"
+          >
+            <Wifi className="w-4 h-4" />
+            <span className="hidden sm:inline">Network</span>
+          </button>
+
+          <button
+            onClick={onCheckUpdates}
+            className={cn(
+              "flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-xl transition-colors",
+              ['available', 'downloading', 'downloaded', 'deferred'].includes(updateStatus.state)
+                ? "bg-violet-100 text-violet-700"
+                : "text-zinc-600 hover:text-violet-600 hover:bg-violet-50"
+            )}
+            title="Check for ADHI ARENA updates"
+          >
+            <Download className={cn("w-4 h-4", updateStatus.state === 'downloading' && "animate-bounce")} />
+            <span className="hidden lg:inline">
+              {updateStatus.state === 'downloading'
+                ? `${updateStatus.percent || 0}%`
+                : updateStatus.state === 'available'
+                  ? 'Update'
+                  : 'Updates'}
+            </span>
+          </button>
+
+          {user?.role === 'admin' && (
+            <button
+              onClick={() => window.adhiArena?.updates.openAdminReleasePage()}
+              className="hidden md:flex items-center gap-2 px-3 py-2 text-sm font-semibold text-fuchsia-700 bg-fuchsia-50 hover:bg-fuchsia-100 rounded-xl transition-colors"
+              title="Open the administrator-only GitHub release workflow"
+            >
+              <Rocket className="w-4 h-4" />
+              Publish Update
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          )}
+
+          {user && (
+          <div className="flex items-center gap-6 ml-2 pl-4 border-l border-zinc-200">
             <div className="flex items-center gap-4">
               <button 
                 onClick={onChangePassword}
@@ -108,19 +212,244 @@ const Navbar = ({ user, onLogout, onChangePassword }: { user: User | null, onLog
               <span>Logout</span>
             </button>
           </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   </nav>
 );
+
+const NetworkPanel = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
+  const [networks, setNetworks] = useState<NetworkEntry[]>([]);
+  const [connectedSsid, setConnectedSsid] = useState('');
+  const [selected, setSelected] = useState<NetworkEntry | null>(null);
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [connecting, setConnecting] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [locationPermissionRequired, setLocationPermissionRequired] = useState(false);
+
+  const refreshNetworks = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      if (!window.adhiArena?.network) {
+        setMessage('Network controls are available in the installed Windows application.');
+        setNetworks([]);
+        return;
+      }
+      const result = await window.adhiArena.network.scan();
+      setNetworks(result.networks || []);
+      setConnectedSsid(result.connectedSsid || '');
+      setMessage(result.message || '');
+      setError(result.error || '');
+      setLocationPermissionRequired(Boolean(result.locationPermissionRequired));
+    } catch (scanError: any) {
+      setError(scanError?.message || 'Unable to scan Wi-Fi networks.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open) refreshNetworks();
+    else {
+      setSelected(null);
+      setPassword('');
+      setError('');
+    }
+  }, [open]);
+
+  const connect = async (network: NetworkEntry, suppliedPassword = '') => {
+    if (!window.adhiArena?.network || network.connected) return;
+    if (network.secured && !network.saved && !suppliedPassword) {
+      setSelected(network);
+      return;
+    }
+
+    setConnecting(network.ssid);
+    setError('');
+    try {
+      const result = await window.adhiArena.network.connect({
+        ssid: network.ssid,
+        password: suppliedPassword,
+        secured: network.secured,
+        saved: network.saved,
+      });
+      setNetworks(result.networks || []);
+      setConnectedSsid(result.connectedSsid || '');
+      setSelected(null);
+      setPassword('');
+    } catch (connectError: any) {
+      setError(connectError?.message || `Unable to connect to ${network.ssid}.`);
+    } finally {
+      setConnecting('');
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-[300] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 12 }}
+            className="w-full max-w-lg max-h-[82vh] bg-white rounded-3xl shadow-2xl border border-zinc-200 flex flex-col overflow-hidden"
+          >
+            <div className="p-6 border-b border-zinc-100 flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 bg-indigo-100 text-indigo-700 rounded-2xl flex items-center justify-center">
+                    {connectedSsid ? <Wifi className="w-6 h-6" /> : <WifiOff className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black text-zinc-900">Network Connection</h2>
+                    <p className="text-sm text-zinc-500">
+                      {connectedSsid ? `Connected to ${connectedSsid}` : 'Select an available Wi-Fi network'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <button onClick={onClose} className="p-2 rounded-xl text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Available networks</span>
+              <button
+                onClick={refreshNetworks}
+                disabled={loading || Boolean(connecting)}
+                className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 disabled:opacity-50"
+              >
+                <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+                Scan Again
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-4 space-y-2">
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-700 flex gap-2">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                  {error}
+                </div>
+              )}
+              {message && (
+                <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-sm text-amber-800">
+                  <p>{message}</p>
+                  {locationPermissionRequired && (
+                    <button
+                      onClick={() => window.adhiArena?.network.openLocationSettings()}
+                      className="mt-2 inline-flex items-center gap-1.5 font-bold text-amber-900 underline underline-offset-2"
+                    >
+                      Open Windows Location Settings
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+              {!loading && networks.length === 0 && !message && (
+                <div className="py-10 text-center text-zinc-400">
+                  <Radio className="w-9 h-9 mx-auto mb-3 opacity-50" />
+                  <p className="text-sm">No Wi-Fi networks were found.</p>
+                </div>
+              )}
+              {networks.map((network) => (
+                <button
+                  key={network.ssid}
+                  onClick={() => connect(network)}
+                  disabled={network.connected || Boolean(connecting)}
+                  className={cn(
+                    "w-full p-4 rounded-2xl border flex items-center justify-between gap-4 text-left transition-all",
+                    network.connected
+                      ? "bg-emerald-50 border-emerald-200"
+                      : "bg-white border-zinc-200 hover:border-indigo-300 hover:bg-indigo-50/40",
+                    connecting && connecting !== network.ssid && "opacity-50"
+                  )}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Wifi className={cn("w-5 h-5 shrink-0", network.connected ? "text-emerald-600" : "text-indigo-600")} />
+                    <div className="min-w-0">
+                      <div className="font-bold text-zinc-900 truncate">{network.ssid}</div>
+                      <div className="text-xs text-zinc-500 flex items-center gap-2 mt-0.5">
+                        <span>{network.signal}% signal</span>
+                        {network.saved && <span className="text-indigo-600">Saved</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {network.secured && <Lock className="w-3.5 h-3.5 text-zinc-400" />}
+                    <span className={cn(
+                      "text-xs font-bold px-2.5 py-1 rounded-lg",
+                      network.connected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-600"
+                    )}>
+                      {connecting === network.ssid ? 'Connecting…' : network.connected ? 'Connected' : 'Connect'}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {selected && (
+              <div className="p-5 border-t border-zinc-200 bg-white">
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    connect(selected, password);
+                  }}
+                  className="space-y-3"
+                >
+                  <div>
+                    <label className="block text-sm font-bold text-zinc-800 mb-1">
+                      Password for {selected.ssid}
+                    </label>
+                    <input
+                      autoFocus
+                      type="password"
+                      minLength={8}
+                      maxLength={63}
+                      required
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      className="w-full px-4 py-3 rounded-xl border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      placeholder="Enter Wi-Fi password"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => { setSelected(null); setPassword(''); }}
+                      className="flex-1 py-2.5 rounded-xl bg-zinc-100 text-zinc-600 font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={Boolean(connecting)}
+                      className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold disabled:opacity-50"
+                    >
+                      Connect
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
 
 const Footer = () => (
   <footer className="bg-white border-t border-zinc-200 py-8 mt-auto">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex flex-col md:flex-row justify-between items-center gap-6">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 bg-gradient-to-br from-indigo-600 to-fuchsia-600 rounded-lg flex items-center justify-center shadow-sm">
-            <BookOpen className="text-white w-4 h-4" />
+          <div className="w-9 h-9 flex items-center justify-center">
+            <img src="/adhi-arena-logo.png" alt="ADHI ARENA logo" className="w-full h-full object-contain" />
           </div>
           <span className="text-lg font-display font-black tracking-tighter bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">
             ADHI ARENA
@@ -174,8 +503,9 @@ const CodingTestCaseResults = ({
           return (
             <div key={trIdx} className="bg-zinc-50 border border-zinc-200 rounded-xl p-4 shadow-sm">
                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-black text-zinc-400 uppercase tracking-widest">
-                     Case #{trIdx + 1} {tr.is_hidden ? '(Hidden)' : ''}
+                  <span className="text-xs font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+                     Case #{trIdx + 1}
+                     {tr.is_hidden && <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">#hidden</span>}
                   </span>
                   <span className={cn(
                      "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider",
@@ -230,8 +560,9 @@ const CodingTestCaseResults = ({
             return (
               <div key={tcIdx} className="bg-zinc-50 border border-zinc-200 rounded-xl p-4">
                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-black text-zinc-400 uppercase tracking-widest">
-                       Case #{tcIdx + 1} {tc.is_hidden ? '(Hidden)' : ''}
+                    <span className="text-xs font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+                       Case #{tcIdx + 1}
+                       {tc.is_hidden && <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">#hidden</span>}
                     </span>
                     <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-zinc-100 text-zinc-500">
                        Not Executed
@@ -295,9 +626,9 @@ const LoginView = ({ onLogin }: { onLogin: (user: User) => void }) => {
             initial={{ scale: 0.5, rotate: -20 }}
             animate={{ scale: 1, rotate: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 20 }}
-            className="inline-flex w-16 h-16 bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 rounded-2xl items-center justify-center shadow-xl shadow-indigo-100 mb-6"
+            className="inline-flex w-24 h-24 items-center justify-center mb-5"
           >
-            <BookOpen className="text-white w-9 h-9" />
+            <img src="/adhi-arena-logo.png" alt="ADHI ARENA logo" className="w-full h-full object-contain" />
           </motion.div>
           <h1 className="text-4xl font-display font-black tracking-tighter bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent drop-shadow-sm">
             ADHI ARENA
@@ -2820,9 +3151,13 @@ const AdminDashboard = () => {
                                   <span className="text-[9px] font-black text-zinc-400 uppercase tracking-[0.2em] mb-1.5 leading-none">Result</span>
                                   <div className={cn(
                                     "px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider shadow-sm",
-                                    detail.status === 'Accepted' ? "bg-emerald-500/10 text-emerald-600 border border-emerald-500/20" : "bg-amber-500/10 text-amber-600 border border-amber-500/20"
+                                    getCodingEvaluationStatus(detail) === 'Accepted'
+                                      ? "bg-emerald-500/10 text-emerald-600 border border-emerald-500/20"
+                                      : getCodingEvaluationStatus(detail) === 'Partially Accepted'
+                                        ? "bg-amber-500/10 text-amber-600 border border-amber-500/20"
+                                        : "bg-red-500/10 text-red-600 border border-red-500/20"
                                   )}>
-                                    {detail.status}
+                                    {getCodingEvaluationStatus(detail)}
                                   </div>
                                 </div>
                                 <div className="h-12 w-px bg-zinc-200/50" />
@@ -4363,6 +4698,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
   const [results, setResults] = useState<Result[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const navigate = useNavigate();
+  const currentTimestamp = useCurrentTimestamp();
 
   const fetchData = async () => {
     setIsRefreshing(true);
@@ -4446,6 +4782,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
               {tests.map(test => {
                 const result = getResultForTest(test.id);
                 const isCompleted = !!result;
+                const contestEnded = hasContestEnded(test.end_time, currentTimestamp);
 
                 return (
                   <motion.div 
@@ -4498,12 +4835,14 @@ const StudentDashboard = ({ student }: { student: User }) => {
                           >
                             View Result
                           </button>
-                          {test.type === 'coding' && (!test.end_time || new Date() < new Date(test.end_time)) && (
+                          {test.type === 'coding' && (
                             <button 
                               onClick={() => navigate(`/student/test/${test.id}`)}
-                              className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2 text-sm"
+                              disabled={!contestEnded}
+                              title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
+                              className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2 text-sm disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
                             >
-                              Try Again
+                              {contestEnded ? 'Try Again' : 'Try Again (After Contest)'}
                             </button>
                           )}
                         </div>
@@ -4603,10 +4942,24 @@ const TestSession = ({ student }: { student: User }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
+  const [runningMode, setRunningMode] = useState<'sample' | 'all' | null>(null);
+  const isRunning = runningMode !== null;
   const [lastRunResult, setLastRunResult] = useState<any>(null);
   const [problemResults, setProblemResults] = useState<Record<string, any>>({});
   const [editorFontSize, setEditorFontSize] = useState(14);
+  const [editorExpanded, setEditorExpanded] = useState(false);
+  const [compilerAvailability, setCompilerAvailability] = useState<Record<string, boolean>>({});
+  const timerDeadlineRef = useRef<number | null>(null);
+  const currentTimestamp = useCurrentTimestamp();
+  const contestEnded = hasContestEnded(testDetails?.end_time, currentTimestamp);
+  const examIsActive = hasStarted && !isFinished;
+
+  useEffect(() => {
+    window.adhiArena?.exam.setActive(examIsActive);
+    return () => {
+      if (examIsActive) window.adhiArena?.exam.setActive(false);
+    };
+  }, [examIsActive]);
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
@@ -4625,7 +4978,7 @@ const TestSession = ({ student }: { student: User }) => {
       (problems || []).forEach(p => {
         const runRes = problemResults[p.id];
         if (runRes && runRes.total_count > 0) {
-          finalScore += (runRes.passed_count / runRes.total_count);
+          finalScore += runRes.passed_count > 0 ? 1 : 0;
         }
       });
     }
@@ -4652,7 +5005,13 @@ const TestSession = ({ student }: { student: User }) => {
               problem_title: p.title,
               solution_code: codingSolutions[p.id]?.code || '',
               language: codingSolutions[p.id]?.language || (testDetails?.allowed_languages?.[0] || 'python'),
-              status: runRes ? (runRes.passed_count === runRes.total_count ? 'Accepted' : 'Partially Accepted') : 'Submitted',
+              status: runRes
+                ? (runRes.passed_count === 0
+                    ? 'Failed'
+                    : runRes.passed_count === runRes.total_count
+                      ? 'Accepted'
+                      : 'Partially Accepted')
+                : 'Submitted',
               test_cases_passed: runRes ? runRes.passed_count : 0,
               total_test_cases: runRes ? runRes.total_count : (p.test_cases?.length || 0),
               test_case_results: runRes ? runRes.results : []
@@ -4688,13 +5047,13 @@ const TestSession = ({ student }: { student: User }) => {
           if (newCount === 1) {
             setProctoringWarning({
               title: "Tab Switch Detected",
-              message: "Warning: Switching tabs is strictly prohibited. Please stay on this tab. Next violation will result in automatic submission.",
+              message: "Warning: Switching tabs is strictly prohibited. Please stay on this tab. Next violation will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
               type: 'warning'
             });
           } else {
             setProctoringWarning({
               title: "Proctoring Violation",
-              message: "Multiple tab switches detected. Your test is being submitted automatically.",
+              message: "Multiple tab switches detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
               type: 'violation'
             });
             handleSubmitRef.current();
@@ -4716,13 +5075,13 @@ const TestSession = ({ student }: { student: User }) => {
             if (newCount === 1) {
               setProctoringWarning({
                 title: "Focus Lost",
-                message: "Warning: You navigated away from the test window. Please keep the test window focused. Next violation will result in automatic submission.",
+                message: "Warning: You navigated away from the test window. Please keep the test window focused. Next violation will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
                 type: 'warning'
               });
             } else {
               setProctoringWarning({
                 title: "Proctoring Violation",
-                message: "Multiple focus loss incidents detected. Your test is being submitted automatically.",
+                message: "Multiple focus loss incidents detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
                 type: 'violation'
               });
               handleSubmitRef.current();
@@ -4748,13 +5107,13 @@ const TestSession = ({ student }: { student: User }) => {
           if (newCount === 1) {
             setProctoringWarning({
               title: "Full-Screen Required",
-              message: "Warning: Full-screen mode is required for this test. Please re-enable it immediately. Further violations will result in automatic submission.",
+              message: "Warning: Full-screen mode is required for this test. Please re-enable it immediately. Further violations will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
               type: 'warning'
             });
           } else {
             setProctoringWarning({
               title: "Proctoring Violation",
-              message: "Multiple full-screen exits detected. Your test is being submitted automatically.",
+              message: "Multiple full-screen exits detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
               type: 'violation'
             });
             handleSubmitRef.current();
@@ -4793,32 +5152,6 @@ const TestSession = ({ student }: { student: User }) => {
 
   useEffect(() => {
     const studentId = (student.student_id?.trim() || student.id.toString());
-    
-    // Check if test already completed
-    fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`)
-      .then(res => res.json())
-      .then(results => {
-        const testResults = results.filter((r: any) => String(r.test_id) === String(id));
-        const alreadyDone = testResults.length > 0;
-        
-        if (alreadyDone) {
-          if (testDetails?.type === 'mcq') {
-            alert('You have already completed this MCQ test.');
-            navigate('/student');
-            return;
-          }
-          
-          if (testDetails?.end_time) {
-            const deadline = new Date(testDetails.end_time);
-            if (new Date() > deadline) {
-              alert('The test time is up. You can no longer try again.');
-              navigate('/student');
-              return;
-            }
-          }
-        }
-      })
-      .catch(err => console.error("Error checking results:", err));
 
     const loadTest = async () => {
       try {
@@ -4837,17 +5170,52 @@ const TestSession = ({ student }: { student: User }) => {
           return;
         }
 
+        const existingResultsRes = await fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`);
+        if (!existingResultsRes.ok) throw new Error('Failed to verify previous attempts');
+        const existingResults = await existingResultsRes.json();
+        const alreadyDone = existingResults.some((result: any) => String(result.test_id) === String(id));
+
+        if (alreadyDone) {
+          if (test.type === 'mcq') {
+            alert('You have already completed this MCQ test.');
+            navigate('/student');
+            return;
+          }
+          if (!test.end_time) {
+            alert('Try Again is unavailable because this contest has no configured end time.');
+            navigate('/student');
+            return;
+          }
+          if (Date.now() < new Date(test.end_time).getTime()) {
+            alert('Try Again is available only after the contest ends.');
+            navigate('/student');
+            return;
+          }
+        }
+
         setTestDetails(test);
         setTimeLeft(test.duration_minutes * 60);
 
         if (test.type === 'coding') {
-          const problemsRes = await fetch(`/api/tests/${id}/problems`);
+          const [problemsRes, compilersRes] = await Promise.all([
+            fetch(`/api/tests/${id}/problems`),
+            fetch('/api/system/compilers')
+          ]);
           if (!problemsRes.ok) throw new Error('Failed to fetch coding problems');
           const problemsData = await problemsRes.json();
+          const compilerData = compilersRes.ok ? await compilersRes.json() : { compilers: [] };
+          const detected = Object.fromEntries(
+            (compilerData.compilers || []).map((compiler: any) => [compiler.language, compiler.available])
+          ) as Record<string, boolean>;
+          detected.python3 = detected.python;
+          setCompilerAvailability(detected);
           
           setProblems(problemsData);
           const initialSolutions: Record<string, { code: string, language: string }> = {};
-          const initialLang = test.allowed_languages?.[0] || 'python';
+          const allowedLanguages = test.allowed_languages || ['python', 'javascript', 'java', 'c', 'cpp'];
+          const initialLang = allowedLanguages.find((language: string) => detected[language] !== false)
+            || allowedLanguages[0]
+            || 'python';
           problemsData.forEach((p: CodingProblem) => {
             initialSolutions[p.id] = { 
               code: getCodeTemplate(initialLang), 
@@ -4884,16 +5252,35 @@ const TestSession = ({ student }: { student: User }) => {
   }, [id, student.student_id, student.id, navigate]);
 
   useEffect(() => {
-    if (timeLeft === null || isFinished || !hasStarted) return;
-    if (timeLeft === 0) {
-      handleSubmit();
-      return;
+    if (isFinished || !hasStarted) return;
+
+    if (timerDeadlineRef.current === null) {
+      const initialSeconds = timeLeft ?? (testDetails?.duration_minutes || 0) * 60;
+      timerDeadlineRef.current = Date.now() + Math.max(0, initialSeconds) * 1000;
     }
-    const timer = setInterval(() => setTimeLeft(prev => prev! - 1), 1000);
-    return () => clearInterval(timer);
-  }, [timeLeft, isFinished, hasStarted]);
+
+    let submittedForTimeout = false;
+    const updateCountdown = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((timerDeadlineRef.current! - Date.now()) / 1000)
+      );
+      setTimeLeft(remaining);
+
+      if (remaining === 0 && !submittedForTimeout) {
+        submittedForTimeout = true;
+        handleSubmitRef.current();
+      }
+    };
+
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 250);
+    return () => window.clearInterval(timer);
+  }, [isFinished, hasStarted, testDetails?.duration_minutes]);
 
   const handleStartTest = async () => {
+    const initialSeconds = timeLeft ?? (testDetails?.duration_minutes || 0) * 60;
+    timerDeadlineRef.current = Date.now() + Math.max(0, initialSeconds) * 1000;
     try {
       if (document.documentElement.requestFullscreen) {
         await document.documentElement.requestFullscreen();
@@ -4907,10 +5294,14 @@ const TestSession = ({ student }: { student: User }) => {
 
   const handleRunCode = async (runAll: boolean = false) => {
     if (!currentP) return;
-    setIsRunning(true);
+    const selectedLang = codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python');
+    if (compilerAvailability[selectedLang] === false) {
+      setLastRunResult({ error: `${selectedLang} is not installed on this computer. Ask the administrator to install it and add it to PATH.` });
+      return;
+    }
+    setRunningMode(runAll ? 'all' : 'sample');
     setLastRunResult(null);
     try {
-      const selectedLang = codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python');
       const res = await fetch('/api/run-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4940,7 +5331,7 @@ const TestSession = ({ student }: { student: User }) => {
     } catch (e: any) {
       setLastRunResult({ error: e.message || "Execution failed. Server error." });
     } finally {
-      setIsRunning(false);
+      setRunningMode(null);
     }
   };
 
@@ -4951,7 +5342,7 @@ const TestSession = ({ student }: { student: User }) => {
       case 'javascript':
         return '// Write your code here\n';
       case 'java':
-        return 'import java.util.*;\n\nclass Solution {\n    public static void main(String[] args) {\n        // Write your code here\n    }\n}';
+        return 'import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        // Write your code here\n    }\n}';
       case 'cpp':
         return '#include <iostream>\n\nint main() {\n    // Write your code here\n    return 0;\n}';
       case 'c':
@@ -5041,6 +5432,7 @@ const TestSession = ({ student }: { student: User }) => {
               <div>
                 <h4 className="font-bold text-amber-900">No Tab Switching</h4>
                 <p className="text-sm text-amber-700/70">Switching tabs or windows is strictly prohibited. You will receive one warning. A second violation will result in automatic submission.</p>
+                <p className="text-sm text-amber-800 mt-2 font-semibold">If a violation is recorded incorrectly, contact the test admin or invigilator.</p>
               </div>
             </div>
 
@@ -5165,20 +5557,24 @@ const TestSession = ({ student }: { student: User }) => {
                 View Result
               </button>
 
-              {testDetails?.type === 'coding' && (!testDetails?.end_time || new Date() < new Date(testDetails.end_time)) && (
+              {testDetails?.type === 'coding' && (
                 <button 
                   onClick={() => {
+                    timerDeadlineRef.current = null;
                     setIsFinished(false);
                     setHasStarted(false);
+                    setShowStartModal(true);
                     setAnswers({});
                     setCodingSolutions({});
                     setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
                     setCurrentIdx(0);
                   }}
-                  className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2"
+                  disabled={!contestEnded}
+                  title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
+                  className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
                 >
                   <RotateCcw className="w-5 h-5" />
-                  Try Again
+                  {contestEnded ? 'Try Again' : 'Try Again (Available After Contest Ends)'}
                 </button>
               )}
 
@@ -5259,9 +5655,12 @@ const TestSession = ({ student }: { student: User }) => {
         )}
       </AnimatePresence>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <div className={cn(
+        "grid grid-cols-1 gap-5",
+        editorExpanded ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(0,1fr)_220px]"
+      )}>
         {/* Main Area */}
-        <div className="lg:col-span-9">
+        <div className="min-w-0">
           <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl border border-zinc-200 sticky top-20 z-40">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 font-bold">
@@ -5336,9 +5735,17 @@ const TestSession = ({ student }: { student: User }) => {
           ) : (
             currentP && (
               <div key={`coding-${currentIdx}`} className="flex flex-col min-h-0 h-full">
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 h-[calc(100vh-280px)] min-h-[500px]">
+                <div className={cn(
+                  "grid grid-cols-1 gap-4 h-[calc(100vh-190px)] min-h-[680px]",
+                  editorExpanded
+                    ? "lg:grid-cols-1"
+                    : "lg:grid-cols-[minmax(260px,0.55fr)_minmax(0,1.85fr)]"
+                )}>
                   {/* Left: Problem Statement */}
-                  <div className="lg:col-span-2 bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm overflow-y-auto custom-scrollbar">
+                  <div className={cn(
+                    "bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm overflow-y-auto custom-scrollbar",
+                    editorExpanded && "hidden"
+                  )}>
                     <h2 className="text-2xl font-bold text-zinc-900 mb-4">{currentP.title}</h2>
                     <div className="prose prose-zinc prose-sm max-w-none mb-6">
                       <p className="whitespace-pre-wrap text-zinc-600">{currentP.description}</p>
@@ -5373,10 +5780,10 @@ const TestSession = ({ student }: { student: User }) => {
                   </div>
 
                   {/* Right: Code Editor */}
-                  <div className="lg:col-span-3 flex flex-col h-full min-h-0">
-                    <div className="bg-[#1e1e1e] border border-zinc-800 rounded-2xl shadow-xl flex flex-col h-full overflow-hidden">
-                      <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-[#252525]">
-                        <div className="flex items-center gap-4">
+                  <div className="flex flex-col h-full min-h-0 min-w-0">
+                    <div className="bg-[#1e1e1e] border border-zinc-800 rounded-2xl shadow-xl flex flex-col flex-1 min-h-[380px] overflow-hidden">
+                      <div className="p-3.5 border-b border-zinc-800 flex flex-wrap justify-between items-center gap-3 bg-[#252525]">
+                        <div className="flex flex-wrap items-center gap-3">
                           <select 
                             value={codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python')}
                             onChange={(e) => {
@@ -5402,8 +5809,9 @@ const TestSession = ({ student }: { student: User }) => {
                             className="bg-[#2d2d2d] text-zinc-300 px-3 py-1.5 rounded-lg border border-zinc-700 text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
                           >
                             {(testDetails?.allowed_languages || ['python', 'javascript', 'java', 'c', 'cpp']).map(lang => (
-                               <option key={lang} value={lang}>
+                               <option key={lang} value={lang} disabled={compilerAvailability[lang] === false}>
                                  {lang === 'python' ? 'Python 3' : lang === 'javascript' ? 'JavaScript' : lang === 'java' ? 'Java' : lang === 'cpp' ? 'C++' : 'C'}
+                                 {compilerAvailability[lang] === false ? ' (not installed)' : ''}
                                </option>
                             ))}
                           </select>
@@ -5426,24 +5834,39 @@ const TestSession = ({ student }: { student: User }) => {
                           <span className="text-zinc-500 text-xs font-mono hidden md:inline">
                             {codingSolutions[currentP.id]?.language === 'java' ? 'Solution.java' : `solution.${codingSolutions[currentP.id]?.language === 'python' ? 'py' : codingSolutions[currentP.id]?.language === 'javascript' ? 'js' : codingSolutions[currentP.id]?.language === 'cpp' ? 'cpp' : 'c'}`}
                           </span>
+                          {problemResults[currentP.id]?.total_count > 0 &&
+                            problemResults[currentP.id]?.passed_count === problemResults[currentP.id]?.total_count && (
+                            <span className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-[10px] font-black uppercase tracking-wider">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Completed
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setEditorExpanded((expanded) => !expanded)}
+                            className="flex items-center gap-2 bg-[#2d2d2d] hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-zinc-700"
+                            title={editorExpanded ? "Restore problem and progress panels" : "Expand code editor"}
+                          >
+                            {editorExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                            {editorExpanded ? 'Restore' : 'Focus Editor'}
+                          </button>
                           <button 
                             onClick={() => handleRunCode(false)}
-                            disabled={isRunning}
+                            disabled={isRunning || compilerAvailability[codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python')] === false}
                             className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
                             title="Run against sample test cases only"
                           >
-                            {isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Terminal className="w-3.5 h-3.5" />}
+                            {runningMode === 'sample' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Terminal className="w-3.5 h-3.5" />}
                             Run Code
                           </button>
                           <button 
                             onClick={() => handleRunCode(true)}
-                            disabled={isRunning}
+                            disabled={isRunning || compilerAvailability[codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python')] === false}
                             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50 shadow-lg shadow-emerald-900/20"
                             title="Run against all test cases including hidden ones"
                           >
-                            {isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                            {runningMode === 'all' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                             Run All Test Cases
                           </button>
                         </div>
@@ -5510,7 +5933,7 @@ const TestSession = ({ student }: { student: User }) => {
 
                     {/* Execution Result Box */}
                     {(lastRunResult || isRunning) && (
-                      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 h-80 overflow-y-auto">
+                      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 h-64 shrink-0 mt-3 overflow-y-auto">
                         <div className="flex items-center justify-between mb-2">
                           <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Console Output</h4>
                           {lastRunResult?.success === true && <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/20">PASSED</span>}
@@ -5561,7 +5984,7 @@ const TestSession = ({ student }: { student: User }) => {
                                       <div key={i} className="border-l-2 border-zinc-800 pl-4 space-y-3">
                                         <div className="flex items-center justify-between">
                                           <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                                            {res.is_hidden ? `Hidden Test Case ${i + 1}` : `Test Case ${i + 1}`}
+                                            {res.is_hidden ? `Test Case ${i + 1}  #hidden` : `Test Case ${i + 1}`}
                                           </span>
                                           {res.success ? (
                                             <span className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20">Passed</span>
@@ -5570,7 +5993,7 @@ const TestSession = ({ student }: { student: User }) => {
                                           )}
                                         </div>
                                         
-                                        {!res.is_hidden ? (
+                                        {(!res.is_hidden || contestEnded) ? (
                                           <div className="grid grid-cols-1 gap-3">
                                             <div className="bg-black/40 p-3 rounded-xl border border-zinc-800/50">
                                               <div className="text-[9px] text-zinc-600 uppercase font-bold mb-2 tracking-widest">Sample Input</div>
@@ -5666,7 +6089,7 @@ const TestSession = ({ student }: { student: User }) => {
         </div>
 
         {/* Navigation Sidebar */}
-        <div className="lg:col-span-3">
+        <div className={cn(editorExpanded && "hidden")}>
           <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm sticky top-20">
             <h3 className="text-lg font-bold text-zinc-900 mb-4 flex items-center gap-2">
               <LayoutDashboard className="w-5 h-5 text-indigo-600" />
@@ -5675,9 +6098,13 @@ const TestSession = ({ student }: { student: User }) => {
             
             <div className="grid grid-cols-5 gap-2 mb-6">
               {(testDetails?.type === 'mcq' ? questions : (problems || [])).map((item, idx) => {
-                const isAnswered = testDetails?.type === 'mcq' 
+                const runResult = testDetails?.type === 'coding' ? problemResults[item.id] : null;
+                const isCompleted = testDetails?.type === 'coding' &&
+                  runResult?.total_count > 0 &&
+                  runResult.passed_count === runResult.total_count;
+                const isAnswered = testDetails?.type === 'mcq'
                   ? answers[item.id] !== undefined
-                  : (codingSolutions[item.id]?.code.trim().length > 0);
+                  : Boolean(codingSolutions[item.id]?.code.trim().length);
                 const isCurrent = currentIdx === idx;
                 
                 return (
@@ -5691,12 +6118,15 @@ const TestSession = ({ student }: { student: User }) => {
                       "w-full aspect-square rounded-lg font-bold text-sm transition-all border flex items-center justify-center",
                       isCurrent 
                         ? "bg-indigo-600 text-white border-indigo-600 shadow-md scale-110 z-10" 
-                        : isAnswered 
-                          ? "bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200" 
+                        : isCompleted
+                          ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 shadow-sm"
+                          : isAnswered
+                          ? "bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200"
                           : "bg-zinc-50 text-zinc-400 border-zinc-200 hover:border-zinc-300 hover:bg-zinc-100"
                     )}
+                    title={isCompleted ? `Problem ${idx + 1}: all test cases passed` : isAnswered ? `Problem ${idx + 1}: attempted` : `Problem ${idx + 1}: not attempted`}
                   >
-                    {idx + 1}
+                    {isCompleted ? <Check className="w-4 h-4 stroke-[3]" /> : idx + 1}
                   </button>
                 );
               })}
@@ -5708,7 +6138,11 @@ const TestSession = ({ student }: { student: User }) => {
                 <span>Current</span>
               </div>
               <div className="flex items-center gap-3 text-xs font-medium text-zinc-500">
-                <div className="w-3 h-3 rounded bg-emerald-100 border border-emerald-200" />
+                <div className="w-3 h-3 rounded bg-emerald-600 border border-emerald-600" />
+                <span>Completed (all cases passed)</span>
+              </div>
+              <div className="flex items-center gap-3 text-xs font-medium text-zinc-500">
+                <div className="w-3 h-3 rounded bg-amber-100 border border-amber-200" />
                 <span>Attempted</span>
               </div>
               <div className="flex items-center gap-3 text-xs font-medium text-zinc-500">
@@ -6270,6 +6704,7 @@ const ResultDetailView = ({ student }: { student: User }) => {
   const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const currentTimestamp = useCurrentTimestamp();
 
   useEffect(() => {
     const fetchAllData = async () => {
@@ -6344,8 +6779,8 @@ const ResultDetailView = ({ student }: { student: User }) => {
   }, [testId, student.student_id, student.id, student.username]);
 
   const isTimeOver = useMemo(() => {
-    return test?.end_time ? new Date() > new Date(test.end_time) : false;
-  }, [test]);
+    return hasContestEnded(test?.end_time, currentTimestamp);
+  }, [test?.end_time, currentTimestamp]);
 
   const studentAnswers = useMemo(() => {
     if (!result || !result.responses) return {};
@@ -6413,8 +6848,9 @@ const ResultDetailView = ({ student }: { student: User }) => {
   }, { correct: 0, incorrect: 0, skipped: 0 }) : null;
 
   const codingStats = isCodingResult ? (result.coding_details || []).reduce((acc, detail) => {
-    if (detail.status === 'Accepted') acc.passed++;
-    else if (detail.status === 'Partially Accepted') acc.partial++;
+    const status = getCodingEvaluationStatus(detail);
+    if (status === 'Accepted') acc.passed++;
+    else if (status === 'Partially Accepted') acc.partial++;
     else acc.failed++;
     return acc;
   }, { passed: 0, partial: 0, failed: 0 }) : null;
@@ -6579,11 +7015,11 @@ const ResultDetailView = ({ student }: { student: User }) => {
                 <div className="text-right">
                   <div className={cn(
                     "px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider inline-block mb-2",
-                    detail.status === 'Accepted' ? "bg-emerald-100 text-emerald-700" :
-                    detail.status === 'Partially Accepted' ? "bg-amber-100 text-amber-700" :
+                    getCodingEvaluationStatus(detail) === 'Accepted' ? "bg-emerald-100 text-emerald-700" :
+                    getCodingEvaluationStatus(detail) === 'Partially Accepted' ? "bg-amber-100 text-amber-700" :
                     "bg-red-100 text-red-700"
                   )}>
-                    {detail.status}
+                    {getCodingEvaluationStatus(detail)}
                   </div>
                   <div className="text-sm font-bold text-zinc-500">
                     {detail.test_cases_passed} / {detail.total_test_cases} Cases Passed
@@ -7045,7 +7481,7 @@ const BankCodingProblemsManagement = () => {
                              className="rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
                            />
                            <label htmlFor={`hidden-${tc.id}`} className="text-sm font-medium text-zinc-600 select-none cursor-pointer">
-                             Hidden Test Case (Don't show in result summary)
+                             Hidden Test Case (revealed to students after the contest ends)
                            </label>
                         </div>
                       </div>
@@ -7195,6 +7631,13 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isChangingOwnPassword, setIsChangingOwnPassword] = useState(false);
   const [newOwnPassword, setNewOwnPassword] = useState('');
+  const [showNetworkPanel, setShowNetworkPanel] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' });
+
+  useEffect(() => {
+    const unsubscribe = window.adhiArena?.updates.onStatus(setUpdateStatus);
+    return () => unsubscribe?.();
+  }, []);
 
   const handleLogin = (user: User) => {
     setUser(user);
@@ -7202,6 +7645,19 @@ export default function App() {
 
   const handleLogout = () => {
     setUser(null);
+  };
+
+  const handleCheckUpdates = async () => {
+    if (!window.adhiArena?.updates) {
+      alert('Update checks are available in the installed ADHI ARENA application.');
+      return;
+    }
+    setUpdateStatus({ state: 'checking' });
+    const result = await window.adhiArena.updates.check();
+    if (!result.ok && result.message) {
+      setUpdateStatus({ state: 'error', message: result.message });
+      alert(result.message);
+    }
   };
 
   const handleOwnPasswordChange = async (e: React.FormEvent) => {
@@ -7230,6 +7686,9 @@ export default function App() {
           user={user} 
           onLogout={handleLogout} 
           onChangePassword={() => setIsChangingOwnPassword(true)}
+          onOpenNetwork={() => setShowNetworkPanel(true)}
+          onCheckUpdates={handleCheckUpdates}
+          updateStatus={updateStatus}
         />
         
         <main className="flex-1">
@@ -7303,6 +7762,7 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
+        <NetworkPanel open={showNetworkPanel} onClose={() => setShowNetworkPanel(false)} />
       </div>
     </Router>
   );

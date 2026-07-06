@@ -1,8 +1,12 @@
 node_modules/
-build/
+build/*
+!build/icon.png
 dist/
+dist-server/
+release/
 coverage/
 .DS_Store
 *.log
+*.pid
 .env*
 !.env.example

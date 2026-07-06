@@ -1,0 +1,111 @@
+name: Publish ADHI ARENA Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (must be higher than every installed version, e.g. 1.1.1)"
+        required: true
+        type: string
+      source_ref:
+        description: "Git branch, tag, or commit to release. Use an older good commit for rollback."
+        required: true
+        default: "main"
+        type: string
+      rollout_percentage:
+        description: "Percentage of installations that should receive this release initially"
+        required: true
+        default: "100"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "25"
+          - "50"
+          - "100"
+      release_notes:
+        description: "Short message shown in the GitHub release"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: adhi-arena-production-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Validate semantic version
+        id: version
+        shell: bash
+        run: |
+          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must use x.y.z format."
+            exit 1
+          fi
+          echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: validate
+    runs-on: windows-latest
+    environment: production
+    steps:
+      - name: Check out selected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set release version
+        shell: pwsh
+        run: npm version "${{ needs.validate.outputs.version }}" --no-git-tag-version
+
+      - name: Validate application
+        run: npm run lint
+
+      - name: Build Windows update
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          npm run build
+          npx electron-builder --win nsis --publish never
+
+      - name: Configure staged rollout
+        if: ${{ inputs.rollout_percentage != '100' }}
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath "release/latest.yml" -Value ""
+          Add-Content -LiteralPath "release/latest.yml" -Value "stagingPercentage: ${{ inputs.rollout_percentage }}"
+
+      - name: Publish administrator-approved release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: ADHI ARENA ${{ needs.validate.outputs.version }}
+          body: |
+            ${{ inputs.release_notes }}
+
+            Rollout: ${{ inputs.rollout_percentage }}%
+            Source: `${{ inputs.source_ref }}`
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            release/Adhi-Arena-Setup-${{ needs.validate.outputs.version }}.exe
+            release/Adhi-Arena-Setup-${{ needs.validate.outputs.version }}.exe.blockmap
+            release/latest.yml

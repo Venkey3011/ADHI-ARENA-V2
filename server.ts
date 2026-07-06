@@ -1,33 +1,25 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
-import { fileURLToPath } from "url";
 import { MongoClient, ObjectId, ServerApiVersion } from "mongodb";
-import { exec } from "child_process";
-import fs from "fs";
-import { promisify } from "util";
-import os from "os";
+import { executeLocal, getCompilerStatus, isLanguageSupported } from "./local-executor";
 
-const writeFile = promisify(fs.writeFile);
-const unlink = promisify(fs.unlink);
-const execPromise = promisify(exec);
+const applicationDirectory = process.env.APP_ROOT || process.cwd();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const uri = process.env.MONGO_URI || "mongodb+srv://admin:admin123@quizmaster-pro.nesqvfa.mongodb.net/quizmaster?retryWrites=true&w=majority&appName=QuizMaster-Pro";
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    deprecationErrors: true,
-  }
-});
+const embeddedMongoUri = "mongodb+srv://admin:admin123@quizmaster-pro.nesqvfa.mongodb.net/quizmaster?retryWrites=true&w=majority&appName=QuizMaster-Pro";
+const uri = process.env.MONGO_URI || embeddedMongoUri;
+let client: MongoClient | null = null;
 
 let db: any;
 
 async function connectDB() {
   try {
     console.log("Connecting to MongoDB...");
+    client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        deprecationErrors: true,
+      }
+    });
     await client.connect();
     db = client.db();
     console.log("Connected to MongoDB Atlas");
@@ -61,7 +53,8 @@ async function startServer() {
 
   try {
     const app = express();
-    const PORT = 3000;
+    const PORT = Number(process.env.PORT || 3000);
+    const HOST = process.env.HOST || "0.0.0.0";
 
     app.use(express.json({ limit: '10mb' }));
     app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -74,7 +67,7 @@ async function startServer() {
 
     // API Routes
     app.use((req, res, next) => {
-      if (!db && req.path.startsWith('/api')) {
+      if (!db && req.path.startsWith('/api') && !['/api/health', '/api/system/compilers'].includes(req.path)) {
         return res.status(503).json({ error: "Database connection not established. Please check server logs and MONGO_URI." });
       }
       next();
@@ -865,14 +858,20 @@ async function startServer() {
       }
     });
 
-    // Shared language map for Wandbox
-    const wandboxLanguageMap: Record<string, string> = {
-      "python": "cpython-3.12.7",
-      "python3": "cpython-3.12.7",
-      "javascript": "nodejs-20.17.0",
-      "java": "openjdk-jdk-21+35",
-      "c": "gcc-13.2.0-c",
-      "cpp": "gcc-13.2.0"
+    app.get("/api/health", (_req, res) => {
+      res.json({ status: "ok" });
+    });
+
+    app.get("/api/system/compilers", (_req, res) => {
+      res.json({ compilers: getCompilerStatus() });
+    });
+
+    // Execute submissions only with compilers/runtimes installed on this computer.
+    const universalExecute = async (code: string, language: string, stdin: string, timeoutMs: number = 20000) => {
+      if (!isLanguageSupported(language)) {
+        return { stdout: "", stderr: `Language ${language} is not supported.`, status: -1, error: "Unsupported Language" };
+      }
+      return executeLocal(code, language, stdin, timeoutMs);
     };
 
     // Helper to evaluate a coding solution against all test cases
@@ -884,82 +883,44 @@ async function startServer() {
         if (!problem) return { passed: 0, total: 0, status: 'Error: Problem not found', results: [] };
 
         const testCases = problem.test_cases || [];
-        const wandboxCompiler = wandboxLanguageMap[language];
-        
-        if (!wandboxCompiler) return { passed: 0, total: testCases.length, status: 'Error: Language not supported', results: [] };
+        const results = [];
 
-        let passedCount = 0;
-        let results = [];
+        // Process sequentially to be gentle on free APIs
         for (const tc of testCases) {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 10000); // 10s per test case for graduation/submission
+          const exec = await universalExecute(code, language, (tc.input || "").toString());
+          const expected = (tc.expected_output || "").trim();
+          const isPassed = exec.status === 0 && exec.stdout === expected;
 
-          try {
-            const response = await fetch("https://wandbox.org/api/compile.json", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                compiler: wandboxCompiler,
-                code: code,
-                stdin: (tc.input || "").toString(),
-                save: false
-              }),
-              signal: controller.signal
-            });
-            clearTimeout(timeout);
-
-            if (response.ok) {
-              const res = await response.json() as any;
-              const programOutput = (res.program_output || "").trim();
-              const programError = (res.program_error || "").trim();
-              const compilerError = (res.compiler_error || "").trim();
-              const expected = (tc.expected_output || "").trim();
-              const isPassed = String(res.status) === "0" && programOutput === expected;
-              
-              if (isPassed) {
-                passedCount++;
-              }
-
-              results.push({
-                status: isPassed ? 'Passed' : 'Failed',
-                actual_output: programOutput,
-                error_message: programError || compilerError || (String(res.status) !== "0" ? "Runtime Error" : null),
-                is_hidden: tc.is_hidden,
-                input: tc.input,
-                expected_output: tc.expected_output
-              });
-            } else {
-              results.push({
-                status: 'Error',
-                error_message: `Service Error ${response.status}`,
-                is_hidden: tc.is_hidden,
-                input: tc.input,
-                expected_output: tc.expected_output
-              });
-            }
-          } catch (e: any) {
-            console.error(`Submission grading error for problem ${problemId} test case:`, e);
-            results.push({
-              status: 'Error',
-              error_message: e.message || "Timeout",
-              is_hidden: tc.is_hidden,
-              input: tc.input,
-              expected_output: tc.expected_output
-            });
-          }
+          results.push({
+            status: isPassed ? 'Passed' : (exec.status === -1 && !exec.stdout ? 'Error' : 'Failed'),
+            actual_output: exec.stdout,
+            error_message: exec.stderr || exec.error || (exec.status !== 0 ? "Process Exited with non-zero status" : null),
+            is_hidden: tc.is_hidden,
+            input: tc.input,
+            expected_output: tc.expected_output,
+            passed: isPassed
+          });
         }
+
+        const passedCount = results.filter(r => r.passed).length;
+        const finalResults = results.map(({ passed, ...rest }) => rest);
 
         return {
           passed: passedCount,
           total: testCases.length,
-          status: passedCount === testCases.length ? 'Accepted' : 'Partially Accepted',
-          results: results
+          status: passedCount === 0
+            ? 'Failed'
+            : passedCount === testCases.length
+              ? 'Accepted'
+              : 'Partially Accepted',
+          results: finalResults
         };
       } catch (e: any) {
-        console.error("Evaluation error:", e);
+        console.error("Critical Evaluation error:", e);
         return { passed: 0, total: 0, status: 'Error: Evaluation failed', results: [] };
       }
     };
+
 
     // Results
     app.post("/api/results", async (req, res) => {
@@ -979,10 +940,9 @@ async function startServer() {
 
         if (coding_details && coding_details.length > 0) {
           console.log(`Grading coding results for student ${student_name}...`);
-          let totalPassedTotal = 0;
-          let totalPossibleCases = 0;
+          let passedProblems = 0;
 
-          // Process problems one by one to avoid overwhelming Wandbox easily
+          // Process problems one by one but keep test case batching inside evaluateCodingSolution
           for (const cd of coding_details) {
             const evaluation = await evaluateCodingSolution(cd.problem_id, cd.solution_code, cd.language);
             processedCodingDetails.push({
@@ -995,14 +955,13 @@ async function startServer() {
               status: evaluation.status,
               test_case_results: evaluation.results
             });
-            totalPassedTotal += evaluation.passed;
-            totalPossibleCases += evaluation.total;
+            if (evaluation.passed > 0) {
+              passedProblems++;
+            }
           }
           
-          // Recalculate score for coding tests
-          if (totalPossibleCases > 0) {
-            finalScore = Math.round((totalPassedTotal / totalPossibleCases) * total_questions);
-          }
+          // Coding questions are scored as one mark when at least one test case passes.
+          finalScore = passedProblems;
         }
 
         const result = await db.collection("results").insertOne({
@@ -1177,76 +1136,28 @@ async function startServer() {
           testCasesToRun = publicCases.length > 0 ? publicCases : [testCases[0] || { input: "", expected_output: "", is_hidden: false }];
         }
         
-        const wandboxCompiler = wandboxLanguageMap[language];
-        if (!wandboxCompiler) return res.status(400).json({ error: `Language ${language} is not supported.` });
-
-        const results = [];
-        let allPassed = true;
-
-        for (const tc of testCasesToRun) {
-          const stdinValue = (tc.input || "").toString();
-          
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 15000); // 15s per test case
-
-          try {
-            const response = await fetch("https://wandbox.org/api/compile.json", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                compiler: wandboxCompiler,
-                code: code,
-                stdin: stdinValue,
-                save: false
-              }),
-              signal: controller.signal
-            });
-
-            clearTimeout(timeout);
-
-            if (!response.ok) {
-              results.push({
-                input: tc.input,
-                expected: tc.expected_output,
-                actual: "Error: Execution service failed",
-                success: false,
-                is_hidden: tc.is_hidden,
-                error: `Service returned ${response.status}`
-              });
-              allPassed = false;
-              continue;
-            }
-
-            const wandboxRes = await response.json() as any;
-            const programOutput = (wandboxRes.program_output || "").trim();
-            const programError = (wandboxRes.program_error || "").trim();
-            const compilerError = (wandboxRes.compiler_error || "").trim();
-            const errorMsg = programError || compilerError;
-            const expected = (tc.expected_output || "").trim();
-            
-            const isSuccess = String(wandboxRes.status) === "0" && programOutput === expected;
-            if (!isSuccess) allPassed = false;
-
-            results.push({
-              input: tc.input,
-              expected: expected,
-              actual: programOutput || errorMsg || wandboxRes.program_message || wandboxRes.compiler_message,
-              success: isSuccess,
-              is_hidden: tc.is_hidden,
-              error: errorMsg || (String(wandboxRes.status) !== "0" && !programOutput ? "Process exited with non-zero status" : null)
-            });
-
-          } catch (e: any) {
-            results.push({
-              input: tc.input,
-              expected: tc.expected_output,
-              actual: "Execution Timeout/Error",
-              success: false,
-              error: e.message
-            });
-            allPassed = false;
-          }
+        if (!isLanguageSupported(language)) {
+          return res.status(400).json({ error: `Language ${language} is not supported.` });
         }
+
+        // Process sequentially to be gentle on free services
+        const results = [];
+        for (const tc of testCasesToRun) {
+          const exec = await universalExecute(code, language, (tc.input || "").toString());
+          const expected = (tc.expected_output || "").trim();
+          const isPassed = exec.status === 0 && exec.stdout === expected;
+
+          results.push({
+            input: tc.input,
+            expected: expected,
+            actual: exec.stdout || exec.stderr || exec.error || (exec.status !== 0 ? `Error (Status ${exec.status})` : ""),
+            success: isPassed,
+            is_hidden: tc.is_hidden,
+            error: exec.stderr || exec.error
+          });
+        }
+
+        const allPassed = results.every(r => r.success);
 
         res.json({
           success: allPassed,
@@ -1263,20 +1174,22 @@ async function startServer() {
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
+      const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
       });
       app.use(vite.middlewares);
     } else {
-      app.use(express.static(path.join(__dirname, "dist")));
+      const staticDirectory = process.env.APP_STATIC_DIR || path.join(applicationDirectory, "dist");
+      app.use(express.static(staticDirectory));
       app.get("*", (req, res) => {
-        res.sendFile(path.join(__dirname, "dist", "index.html"));
+        res.sendFile(path.join(staticDirectory, "index.html"));
       });
     }
 
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on port ${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`Server running at http://${HOST}:${PORT}`);
     });
   } catch (error) {
     console.error("Failed to start server:", error);

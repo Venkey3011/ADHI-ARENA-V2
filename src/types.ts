@@ -123,5 +123,6 @@ export interface Result {
   total_questions: number;
   responses?: string; // JSON string of student answers
   coding_details?: CodingResultDetail[];
+  test_type?: 'mcq' | 'coding';
   completed_at: string;
 }
