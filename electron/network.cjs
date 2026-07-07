@@ -73,6 +73,41 @@ function parseNetworks(text, profiles, connectedSsid) {
     .sort((a, b) => Number(b.connected) - Number(a.connected) || b.signal - a.signal);
 }
 
+function profileNetwork(ssid, connectedSsid) {
+  return {
+    ssid,
+    signal: ssid === connectedSsid ? 100 : 0,
+    authentication: "Saved Windows profile",
+    encryption: "",
+    saved: true,
+    connected: ssid === connectedSsid,
+    secured: true,
+  };
+}
+
+function mergeNetworkLists(visibleNetworks, profiles, connectedSsid) {
+  const bySsid = new Map();
+
+  for (const network of visibleNetworks) {
+    bySsid.set(network.ssid, {
+      ...network,
+      saved: network.saved || profiles.has(network.ssid),
+      connected: network.ssid === connectedSsid,
+    });
+  }
+
+  for (const ssid of profiles) {
+    if (!bySsid.has(ssid)) bySsid.set(ssid, profileNetwork(ssid, connectedSsid));
+  }
+
+  if (connectedSsid && !bySsid.has(connectedSsid)) {
+    bySsid.set(connectedSsid, profileNetwork(connectedSsid, connectedSsid));
+  }
+
+  return Array.from(bySsid.values())
+    .sort((a, b) => Number(b.connected) - Number(a.connected) || b.signal - a.signal || a.ssid.localeCompare(b.ssid));
+}
+
 function escapeXml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -119,21 +154,12 @@ async function scanNetworks() {
 
     const connected = /State\s*:\s*connected/i.test(interfaceText);
     const connectedSsid = connected ? fieldValue(interfaceText, "SSID") : "";
-    const visibleNetworks = networkText
-      ? parseNetworks(networkText, profiles, connectedSsid)
-      : Array.from(profiles).map((ssid) => ({
-          ssid,
-          signal: 0,
-          authentication: "Saved Windows profile",
-          encryption: "",
-          saved: true,
-          connected: false,
-          secured: true,
-        }));
+    const visibleNetworks = networkText ? parseNetworks(networkText, profiles, connectedSsid) : [];
+    const networks = mergeNetworkLists(visibleNetworks, profiles, connectedSsid);
     return {
       supported: true,
       connectedSsid,
-      networks: visibleNetworks,
+      networks,
       locationPermissionRequired,
       message: locationPermissionRequired
         ? "Windows Location Services must be enabled to scan nearby Wi-Fi networks. Saved networks are shown below."

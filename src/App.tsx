@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { 
   LayoutDashboard, 
@@ -91,6 +91,20 @@ const hasContestEnded = (endTime: string | undefined, timestamp: number) => {
   if (!endTime) return false;
   const deadline = new Date(endTime).getTime();
   return Number.isFinite(deadline) && timestamp >= deadline;
+};
+
+const isEditableEventTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('.monaco-editor')) return true;
+  const editable = target.closest('input, textarea, select, [contenteditable="true"]');
+  return editable instanceof HTMLElement && !editable.hasAttribute('disabled');
+};
+
+const getRunPassedCount = (runResult: any) => Number(runResult?.passed_count ?? runResult?.passed ?? 0);
+const getRunTotalCount = (runResult: any) => Number(runResult?.total_count ?? runResult?.total ?? runResult?.testResults?.length ?? runResult?.results?.length ?? 0);
+const hasRunFullyPassed = (runResult: any) => {
+  const total = getRunTotalCount(runResult);
+  return total > 0 && getRunPassedCount(runResult) === total;
 };
 
 type NetworkEntry = {
@@ -230,8 +244,8 @@ const NetworkPanel = ({ open, onClose }: { open: boolean; onClose: () => void })
   const [message, setMessage] = useState('');
   const [locationPermissionRequired, setLocationPermissionRequired] = useState(false);
 
-  const refreshNetworks = async () => {
-    setError('');
+  const refreshNetworks = async (clearExistingError = true) => {
+    if (clearExistingError) setError('');
     setLoading(true);
     try {
       if (!window.adhiArena?.network) {
@@ -243,7 +257,7 @@ const NetworkPanel = ({ open, onClose }: { open: boolean; onClose: () => void })
       setNetworks(result.networks || []);
       setConnectedSsid(result.connectedSsid || '');
       setMessage(result.message || '');
-      setError(result.error || '');
+      if (clearExistingError || result.error) setError(result.error || '');
       setLocationPermissionRequired(Boolean(result.locationPermissionRequired));
     } catch (scanError: any) {
       setError(scanError?.message || 'Unable to scan Wi-Fi networks.');
@@ -283,6 +297,7 @@ const NetworkPanel = ({ open, onClose }: { open: boolean; onClose: () => void })
       setPassword('');
     } catch (connectError: any) {
       setError(connectError?.message || `Unable to connect to ${network.ssid}.`);
+      await refreshNetworks(false);
     } finally {
       setConnecting('');
     }
@@ -320,7 +335,7 @@ const NetworkPanel = ({ open, onClose }: { open: boolean; onClose: () => void })
             <div className="p-4 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Available networks</span>
               <button
-                onClick={refreshNetworks}
+                onClick={() => refreshNetworks()}
                 disabled={loading || Boolean(connecting)}
                 className="flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 disabled:opacity-50"
               >
@@ -4698,6 +4713,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
   const [results, setResults] = useState<Result[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const currentTimestamp = useCurrentTimestamp();
 
   const fetchData = async () => {
@@ -4726,7 +4742,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
 
   useEffect(() => {
     fetchData();
-  }, [student.batch, student.student_id, student.id]);
+  }, [student.batch, student.student_id, student.id, location.key, location.state]);
 
   const getResultForTest = (testId: string) => {
     if (!results || !Array.isArray(results)) return null;
@@ -4977,8 +4993,8 @@ const TestSession = ({ student }: { student: User }) => {
     } else {
       (problems || []).forEach(p => {
         const runRes = problemResults[p.id];
-        if (runRes && runRes.total_count > 0) {
-          finalScore += runRes.passed_count > 0 ? 1 : 0;
+        if (getRunTotalCount(runRes) > 0) {
+          finalScore += getRunPassedCount(runRes) > 0 ? 1 : 0;
         }
       });
     }
@@ -5006,15 +5022,15 @@ const TestSession = ({ student }: { student: User }) => {
               solution_code: codingSolutions[p.id]?.code || '',
               language: codingSolutions[p.id]?.language || (testDetails?.allowed_languages?.[0] || 'python'),
               status: runRes
-                ? (runRes.passed_count === 0
+                ? (getRunPassedCount(runRes) === 0
                     ? 'Failed'
-                    : runRes.passed_count === runRes.total_count
+                    : hasRunFullyPassed(runRes)
                       ? 'Accepted'
                       : 'Partially Accepted')
                 : 'Submitted',
-              test_cases_passed: runRes ? runRes.passed_count : 0,
-              total_test_cases: runRes ? runRes.total_count : (p.test_cases?.length || 0),
-              test_case_results: runRes ? runRes.results : []
+              test_cases_passed: runRes ? getRunPassedCount(runRes) : 0,
+              total_test_cases: runRes ? getRunTotalCount(runRes) : (p.test_cases?.length || 0),
+              test_case_results: runRes ? (runRes.testResults || runRes.results || []) : []
             };
           }) : []
         })
@@ -5093,10 +5109,12 @@ const TestSession = ({ student }: { student: User }) => {
     };
 
     const handleContextMenu = (e: MouseEvent) => {
+      if (isEditableEventTarget(e.target)) return;
       e.preventDefault();
     };
 
     const handleCopy = (e: ClipboardEvent) => {
+      if (isEditableEventTarget(e.target)) return;
       e.preventDefault();
     };
 
@@ -5551,10 +5569,11 @@ const TestSession = ({ student }: { student: User }) => {
             <div className="flex flex-col gap-3">
               <button 
                 onClick={() => navigate(`/student/results/${id}`)}
-                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+                disabled={isSubmitting}
+                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <LayoutDashboard className="w-5 h-5" />
-                View Result
+                {isSubmitting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <LayoutDashboard className="w-5 h-5" />}
+                {isSubmitting ? 'Saving Result...' : 'View Result'}
               </button>
 
               {testDetails?.type === 'coding' && (
@@ -5569,7 +5588,7 @@ const TestSession = ({ student }: { student: User }) => {
                     setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
                     setCurrentIdx(0);
                   }}
-                  disabled={!contestEnded}
+                  disabled={!contestEnded || isSubmitting}
                   title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
                   className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
                 >
@@ -5579,8 +5598,9 @@ const TestSession = ({ student }: { student: User }) => {
               )}
 
               <button 
-                onClick={() => navigate('/student')}
-                className="w-full bg-zinc-100 text-zinc-600 py-3 rounded-xl font-semibold hover:bg-zinc-200 transition-colors"
+                onClick={() => navigate('/student', { state: { refreshAfterSubmit: Date.now() } })}
+                disabled={isSubmitting}
+                className="w-full bg-zinc-100 text-zinc-600 py-3 rounded-xl font-semibold hover:bg-zinc-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Back to Dashboard
               </button>
@@ -5834,8 +5854,7 @@ const TestSession = ({ student }: { student: User }) => {
                           <span className="text-zinc-500 text-xs font-mono hidden md:inline">
                             {codingSolutions[currentP.id]?.language === 'java' ? 'Solution.java' : `solution.${codingSolutions[currentP.id]?.language === 'python' ? 'py' : codingSolutions[currentP.id]?.language === 'javascript' ? 'js' : codingSolutions[currentP.id]?.language === 'cpp' ? 'cpp' : 'c'}`}
                           </span>
-                          {problemResults[currentP.id]?.total_count > 0 &&
-                            problemResults[currentP.id]?.passed_count === problemResults[currentP.id]?.total_count && (
+                          {hasRunFullyPassed(problemResults[currentP.id]) && (
                             <span className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-[10px] font-black uppercase tracking-wider">
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               Completed
@@ -6099,9 +6118,7 @@ const TestSession = ({ student }: { student: User }) => {
             <div className="grid grid-cols-5 gap-2 mb-6">
               {(testDetails?.type === 'mcq' ? questions : (problems || [])).map((item, idx) => {
                 const runResult = testDetails?.type === 'coding' ? problemResults[item.id] : null;
-                const isCompleted = testDetails?.type === 'coding' &&
-                  runResult?.total_count > 0 &&
-                  runResult.passed_count === runResult.total_count;
+                const isCompleted = testDetails?.type === 'coding' && hasRunFullyPassed(runResult);
                 const isAnswered = testDetails?.type === 'mcq'
                   ? answers[item.id] !== undefined
                   : Boolean(codingSolutions[item.id]?.code.trim().length);
@@ -6115,9 +6132,11 @@ const TestSession = ({ student }: { student: User }) => {
                       setLastRunResult(null);
                     }}
                     className={cn(
-                      "w-full aspect-square rounded-lg font-bold text-sm transition-all border flex items-center justify-center",
+                      "w-full aspect-square rounded-lg font-bold text-sm transition-all border flex items-center justify-center relative",
                       isCurrent 
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-md scale-110 z-10" 
+                        ? isCompleted
+                          ? "bg-emerald-600 text-white border-emerald-600 shadow-md scale-110 z-10"
+                          : "bg-indigo-600 text-white border-indigo-600 shadow-md scale-110 z-10" 
                         : isCompleted
                           ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 shadow-sm"
                           : isAnswered
@@ -6126,7 +6145,12 @@ const TestSession = ({ student }: { student: User }) => {
                     )}
                     title={isCompleted ? `Problem ${idx + 1}: all test cases passed` : isAnswered ? `Problem ${idx + 1}: attempted` : `Problem ${idx + 1}: not attempted`}
                   >
-                    {isCompleted ? <Check className="w-4 h-4 stroke-[3]" /> : idx + 1}
+                    <span>{idx + 1}</span>
+                    {isCompleted && (
+                      <span className="absolute -right-1 -top-1 w-4 h-4 rounded-full bg-white text-emerald-600 shadow-sm flex items-center justify-center">
+                        <Check className="w-3 h-3 stroke-[3]" />
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -6159,6 +6183,32 @@ const TestSession = ({ student }: { student: User }) => {
               >
                 Finish Test
               </button>
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <button
+                  type="button"
+                  disabled={currentIdx === 0}
+                  onClick={() => {
+                    setCurrentIdx(prev => Math.max(0, prev - 1));
+                    setLastRunResult(null);
+                  }}
+                  className="py-2.5 px-3 rounded-xl border border-zinc-200 text-zinc-700 font-bold text-sm hover:bg-zinc-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={currentIdx >= totalItems - 1}
+                  onClick={() => {
+                    setCurrentIdx(prev => Math.min(totalItems - 1, prev + 1));
+                    setLastRunResult(null);
+                  }}
+                  className="py-2.5 px-3 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700 transition-colors disabled:bg-zinc-200 disabled:text-zinc-500 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+                >
+                  Next
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
