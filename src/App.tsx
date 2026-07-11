@@ -2611,6 +2611,11 @@ const AdminDashboard = () => {
     fetchBatches();
   }, []);
 
+  useEffect(() => {
+    const syncResults = window.setInterval(fetchResults, 60_000);
+    return () => window.clearInterval(syncResults);
+  }, []);
+
   const fetchTests = async () => {
     try {
       const res = await fetch('/api/tests');
@@ -2629,6 +2634,10 @@ const AdminDashboard = () => {
       if (res.ok) {
         const data = await res.json();
         setResults(data);
+        setSelectedSubmission(current => {
+          if (!current) return current;
+          return data.find((result: Result) => result.id === current.id) || current;
+        });
       }
     } catch (error) {
       console.error('Failed to fetch results:', error);
@@ -4248,6 +4257,11 @@ const TestManagement = () => {
     fetchTestResults();
   }, [id]);
 
+  useEffect(() => {
+    const syncTestResults = window.setInterval(fetchTestResults, 60_000);
+    return () => window.clearInterval(syncTestResults);
+  }, [id]);
+
   const fetchTest = async () => {
     try {
       const res = await fetch('/api/tests');
@@ -4274,9 +4288,15 @@ const TestManagement = () => {
   };
 
   const fetchTestResults = async () => {
-    const res = await fetch(`/api/tests/${id}/results`);
-    const data = await res.json();
-    setResults(data);
+    try {
+      const res = await fetch(`/api/tests/${id}/results`);
+      if (res.ok) {
+        const data = await res.json();
+        setResults(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch test results:', error);
+    }
   };
 
   const handleExportExcel = () => {
