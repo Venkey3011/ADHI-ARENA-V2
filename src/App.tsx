@@ -107,6 +107,14 @@ const hasRunFullyPassed = (runResult: any) => {
   return total > 0 && getRunPassedCount(runResult) === total;
 };
 
+const MAX_PROCTORING_WARNINGS = 3;
+
+const getStudentKey = (student: User) => student.student_id?.trim() || student.id.toString();
+const getCodingDraftKey = (testId: string | undefined, student: User) =>
+  testId ? `adhi-arena:coding-draft:${getStudentKey(student)}:${testId}` : '';
+const getPendingSubmissionKey = (testId: string | undefined, student: User) =>
+  testId ? `adhi-arena:pending-submission:${getStudentKey(student)}:${testId}` : '';
+
 type NetworkEntry = {
   ssid: string;
   signal: number;
@@ -132,14 +140,16 @@ const Navbar = ({
   onChangePassword,
   onOpenNetwork,
   onCheckUpdates,
-  updateStatus
+  updateStatus,
+  appVersion
 }: {
   user: User | null,
   onLogout: () => void,
   onChangePassword: () => void,
   onOpenNetwork: () => void,
   onCheckUpdates: () => void,
-  updateStatus: UpdateStatus
+  updateStatus: UpdateStatus,
+  appVersion?: string
 }) => (
   <nav className="bg-white border-b border-zinc-200 sticky top-0 z-50">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -154,6 +164,11 @@ const Navbar = ({
           <span className="text-xl font-display font-black tracking-tighter bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 bg-clip-text text-transparent drop-shadow-sm">
             ADHI ARENA
           </span>
+          {appVersion && (
+            <span className="hidden sm:inline-flex text-[10px] font-black text-zinc-400 bg-zinc-100 px-2 py-0.5 rounded-full">
+              v{appVersion}
+            </span>
+          )}
         </div>
         
         <div className="flex items-center gap-3">
@@ -168,23 +183,43 @@ const Navbar = ({
 
           <button
             onClick={onCheckUpdates}
+            disabled={['checking', 'downloading', 'installing'].includes(updateStatus.state)}
             className={cn(
-              "flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-xl transition-colors",
-              ['available', 'downloading', 'downloaded', 'deferred'].includes(updateStatus.state)
+              "flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-xl transition-colors disabled:opacity-70 disabled:cursor-wait",
+              ['available', 'downloading', 'downloaded', 'deferred', 'installing'].includes(updateStatus.state)
                 ? "bg-violet-100 text-violet-700"
                 : "text-zinc-600 hover:text-violet-600 hover:bg-violet-50"
             )}
-            title="Check for ADHI ARENA updates"
+            title={updateStatus.state === 'downloaded' ? "Install downloaded ADHI ARENA update" : "Check for ADHI ARENA updates"}
           >
-            <Download className={cn("w-4 h-4", updateStatus.state === 'downloading' && "animate-bounce")} />
+            <Download className={cn("w-4 h-4", ['downloading', 'installing'].includes(updateStatus.state) && "animate-bounce")} />
             <span className="hidden lg:inline">
-              {updateStatus.state === 'downloading'
+              {updateStatus.state === 'checking'
+                ? 'Checking'
+                : updateStatus.state === 'downloading'
                 ? `${updateStatus.percent || 0}%`
+                : updateStatus.state === 'downloaded'
+                  ? 'Install'
+                : updateStatus.state === 'installing'
+                  ? 'Installing'
                 : updateStatus.state === 'available'
                   ? 'Update'
                   : 'Updates'}
             </span>
           </button>
+
+          {updateStatus.message && ['downloaded', 'deferred', 'error'].includes(updateStatus.state) && (
+            <span className={cn(
+              "hidden xl:inline-flex max-w-[220px] truncate text-xs font-semibold px-2.5 py-1 rounded-lg",
+              updateStatus.state === 'error'
+                ? "bg-red-50 text-red-700"
+                : updateStatus.state === 'downloaded'
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-amber-50 text-amber-700"
+            )}>
+              {updateStatus.message}
+            </span>
+          )}
 
           {user?.role === 'admin' && (
             <button
@@ -604,7 +639,19 @@ const LoginView = ({ onLogin }: { onLogin: (user: User) => void }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ title: string; message: string; type: 'auth' | 'network' } | null>(null);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -616,14 +663,28 @@ const LoginView = ({ onLogin }: { onLogin: (user: User) => void }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         onLogin(data.user);
+      } else if (res.status === 401) {
+        setError({
+          title: 'Invalid credentials',
+          message: data?.message || 'Please check your username or student ID and password.',
+          type: 'auth'
+        });
       } else {
-        setError(data.message || 'Invalid credentials');
+        setError({
+          title: 'Connection problem',
+          message: data?.message || 'Unable to verify your login right now. Check your internet connection and try again.',
+          type: 'network'
+        });
       }
     } catch (error) {
-      setError('Login failed. Please try again.');
+      setError({
+        title: 'Check your internet connection',
+        message: 'ADHI ARENA could not reach the login server. Please check your Wi-Fi or internet connection and try again.',
+        type: 'network'
+      });
     } finally {
       setIsLoading(false);
     }
@@ -651,14 +712,36 @@ const LoginView = ({ onLogin }: { onLogin: (user: User) => void }) => {
           <p className="text-zinc-500 mt-3 font-medium text-sm">Sign in to access your dashboard</p>
         </div>
 
+        {!isOnline && (
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-100 text-amber-800 text-sm rounded-xl flex items-start gap-3">
+            <WifiOff className="w-5 h-5 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">You appear to be offline</p>
+              <p className="mt-0.5 leading-relaxed">Connect to the internet before signing in.</p>
+            </div>
+          </div>
+        )}
+
         {error && (
           <motion.div 
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mb-6 p-3 bg-red-50 border border-red-100 text-red-600 text-sm rounded-lg flex items-center gap-2"
+            className={cn(
+              "mb-6 p-4 text-sm rounded-xl flex items-start gap-3 border",
+              error.type === 'network'
+                ? "bg-amber-50 border-amber-100 text-amber-800"
+                : "bg-red-50 border-red-100 text-red-700"
+            )}
           >
-            <XCircle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
+            {error.type === 'network' ? (
+              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+            ) : (
+              <XCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            )}
+            <div>
+              <p className="font-bold">{error.title}</p>
+              <p className="mt-0.5 leading-relaxed">{error.message}</p>
+            </div>
           </motion.div>
         )}
 
@@ -4716,11 +4799,38 @@ const StudentDashboard = ({ student }: { student: User }) => {
   const location = useLocation();
   const currentTimestamp = useCurrentTimestamp();
 
+  const retryPendingSubmissions = async () => {
+    const studentId = getStudentKey(student);
+    const prefix = `adhi-arena:pending-submission:${studentId}:`;
+    const keys = Array.from({ length: localStorage.length }, (_, idx) => localStorage.key(idx))
+      .filter((key): key is string => Boolean(key?.startsWith(prefix)));
+
+    for (const key of keys) {
+      try {
+        const saved = localStorage.getItem(key);
+        if (!saved) continue;
+        const parsed = JSON.parse(saved);
+        const res = await fetch('/api/results', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed.payload)
+        });
+        if (res.ok) {
+          localStorage.removeItem(key);
+          localStorage.removeItem(key.replace('pending-submission', 'coding-draft'));
+        }
+      } catch (retryError) {
+        console.warn('Pending submission retry failed:', retryError);
+      }
+    }
+  };
+
   const fetchData = async () => {
     setIsRefreshing(true);
-    const studentId = (student.student_id?.trim() || student.id.toString());
+    const studentId = getStudentKey(student);
     
     try {
+      await retryPendingSubmissions();
       const [testsRes, resultsRes] = await Promise.all([
         fetch(`/api/tests?batch=${encodeURIComponent(student.batch)}`),
         fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`)
@@ -4964,11 +5074,19 @@ const TestSession = ({ student }: { student: User }) => {
   const [problemResults, setProblemResults] = useState<Record<string, any>>({});
   const [editorFontSize, setEditorFontSize] = useState(14);
   const [editorExpanded, setEditorExpanded] = useState(false);
+  const [forcePlainCodeEditor, setForcePlainCodeEditor] = useState(false);
+  const [monacoLoadTimedOut, setMonacoLoadTimedOut] = useState(false);
+  const [monacoRetryKey, setMonacoRetryKey] = useState(0);
+  const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
+  const [submissionSaveError, setSubmissionSaveError] = useState<string | null>(null);
   const [compilerAvailability, setCompilerAvailability] = useState<Record<string, boolean>>({});
   const timerDeadlineRef = useRef<number | null>(null);
+  const monacoEditorReadyRef = useRef(false);
   const currentTimestamp = useCurrentTimestamp();
   const contestEnded = hasContestEnded(testDetails?.end_time, currentTimestamp);
   const examIsActive = hasStarted && !isFinished;
+  const codingDraftKey = getCodingDraftKey(id, student);
+  const pendingSubmissionKey = getPendingSubmissionKey(id, student);
 
   useEffect(() => {
     window.adhiArena?.exam.setActive(examIsActive);
@@ -4977,9 +5095,59 @@ const TestSession = ({ student }: { student: User }) => {
     };
   }, [examIsActive]);
 
+  const buildSubmissionPayload = (calculatedScore: number) => ({
+    client_submission_id: typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    test_id: id!,
+    student_name: student.username,
+    student_id: getStudentKey(student),
+    score: calculatedScore,
+    total_questions: testDetails?.type === 'mcq' ? questions.length : problems.length,
+    responses: testDetails?.type === 'mcq' ? answers : {},
+    coding_details: testDetails?.type === 'coding' ? (problems || []).map(p => {
+      const runRes = problemResults[p.id];
+      return {
+        problem_id: p.id,
+        problem_title: p.title,
+        solution_code: codingSolutions[p.id]?.code || '',
+        language: codingSolutions[p.id]?.language || (testDetails?.allowed_languages?.[0] || 'python'),
+        status: runRes
+          ? (getRunPassedCount(runRes) === 0
+              ? 'Failed'
+              : hasRunFullyPassed(runRes)
+                ? 'Accepted'
+                : 'Partially Accepted')
+          : 'Submitted',
+        test_cases_passed: runRes ? getRunPassedCount(runRes) : 0,
+        total_test_cases: runRes ? getRunTotalCount(runRes) : (p.test_cases?.length || 0),
+        test_case_results: runRes ? (runRes.testResults || runRes.results || []) : []
+      };
+    }) : []
+  });
+
+  const saveSubmissionPayload = async (payload: any) => {
+    localStorage.setItem(pendingSubmissionKey, JSON.stringify({ payload, saved_at: new Date().toISOString() }));
+    const res = await fetch('/api/results', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Unable to save the result. Check your internet connection and try again.');
+    }
+    localStorage.removeItem(pendingSubmissionKey);
+    if (codingDraftKey) localStorage.removeItem(codingDraftKey);
+    if (data?.score !== undefined) setScore(data.score);
+    setSubmissionSaveError(null);
+    return data;
+  };
+
   const handleSubmit = async () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
+    setSubmissionSaveError(null);
     let finalScore = 0;
     
     if (testDetails?.type === 'mcq') {
@@ -5004,44 +5172,25 @@ const TestSession = ({ student }: { student: User }) => {
     setIsFinished(true);
 
     try {
-      const res = await fetch('/api/results', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          test_id: id!,
-          student_name: student.username,
-          student_id: (student.student_id?.trim() || student.id.toString()),
-          score: calculatedScore,
-          total_questions: testDetails?.type === 'mcq' ? questions.length : problems.length,
-          responses: testDetails?.type === 'mcq' ? answers : {},
-          coding_details: testDetails?.type === 'coding' ? (problems || []).map(p => {
-            const runRes = problemResults[p.id];
-            return {
-              problem_id: p.id,
-              problem_title: p.title,
-              solution_code: codingSolutions[p.id]?.code || '',
-              language: codingSolutions[p.id]?.language || (testDetails?.allowed_languages?.[0] || 'python'),
-              status: runRes
-                ? (getRunPassedCount(runRes) === 0
-                    ? 'Failed'
-                    : hasRunFullyPassed(runRes)
-                      ? 'Accepted'
-                      : 'Partially Accepted')
-                : 'Submitted',
-              test_cases_passed: runRes ? getRunPassedCount(runRes) : 0,
-              total_test_cases: runRes ? getRunTotalCount(runRes) : (p.test_cases?.length || 0),
-              test_case_results: runRes ? (runRes.testResults || runRes.results || []) : []
-            };
-          }) : []
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok && data.score !== undefined) {
-        setScore(data.score);
-      }
-    } catch (e) {
+      await saveSubmissionPayload(buildSubmissionPayload(calculatedScore));
+    } catch (e: any) {
       console.error("Submission error:", e);
+      setSubmissionSaveError(e?.message || 'Unable to save the result. Check your internet connection and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const retryPendingSubmission = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const saved = localStorage.getItem(pendingSubmissionKey);
+      if (!saved) throw new Error('No pending result was found to retry.');
+      const parsed = JSON.parse(saved);
+      await saveSubmissionPayload(parsed.payload);
+    } catch (e: any) {
+      setSubmissionSaveError(e?.message || 'Unable to save the result. Check your internet connection and try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -5060,16 +5209,16 @@ const TestSession = ({ student }: { student: User }) => {
       if (document.hidden && hasStarted && !isFinished) {
         setTabSwitchCount(prev => {
           const newCount = prev + 1;
-          if (newCount === 1) {
+          if (newCount <= MAX_PROCTORING_WARNINGS) {
             setProctoringWarning({
-              title: "Tab Switch Detected",
-              message: "Warning: Switching tabs is strictly prohibited. Please stay on this tab. Next violation will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
+              title: `Tab Switch Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
+              message: `Switching tabs is strictly prohibited. Please stay on this tab. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
               type: 'warning'
             });
           } else {
             setProctoringWarning({
               title: "Proctoring Violation",
-              message: "Multiple tab switches detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
+              message: "Multiple tab switches were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
               type: 'violation'
             });
             handleSubmitRef.current();
@@ -5088,16 +5237,16 @@ const TestSession = ({ student }: { student: User }) => {
 
           setTabSwitchCount(prev => {
             const newCount = prev + 1;
-            if (newCount === 1) {
+            if (newCount <= MAX_PROCTORING_WARNINGS) {
               setProctoringWarning({
-                title: "Focus Lost",
-                message: "Warning: You navigated away from the test window. Please keep the test window focused. Next violation will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
+                title: `Focus Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
+                message: `You navigated away from the test window. Please keep the test window focused. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
                 type: 'warning'
               });
             } else {
               setProctoringWarning({
                 title: "Proctoring Violation",
-                message: "Multiple focus loss incidents detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
+                message: "Multiple focus loss incidents were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
                 type: 'violation'
               });
               handleSubmitRef.current();
@@ -5122,16 +5271,16 @@ const TestSession = ({ student }: { student: User }) => {
       if (!document.fullscreenElement && hasStarted && !isFinished) {
         setFullScreenExitCount(prev => {
           const newCount = prev + 1;
-          if (newCount === 1) {
+          if (newCount <= MAX_PROCTORING_WARNINGS) {
             setProctoringWarning({
-              title: "Full-Screen Required",
-              message: "Warning: Full-screen mode is required for this test. Please re-enable it immediately. Further violations will result in automatic submission. Contact the test admin or invigilator if you need assistance.",
+              title: `Full-Screen Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
+              message: `Full-screen mode is required for this test. Please re-enable it immediately. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
               type: 'warning'
             });
           } else {
             setProctoringWarning({
               title: "Proctoring Violation",
-              message: "Multiple full-screen exits detected. Your test is being submitted automatically. Contact the test admin or invigilator for assistance.",
+              message: "Multiple full-screen exits were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
               type: 'violation'
             });
             handleSubmitRef.current();
@@ -5240,6 +5389,16 @@ const TestSession = ({ student }: { student: User }) => {
               language: initialLang 
             };
           });
+          try {
+            const savedDraft = localStorage.getItem(getCodingDraftKey(id, student));
+            if (savedDraft) {
+              const parsed = JSON.parse(savedDraft);
+              Object.assign(initialSolutions, parsed.solutions || {});
+              setDraftSavedAt(parsed.saved_at ? new Date(parsed.saved_at).getTime() : null);
+            }
+          } catch (draftError) {
+            console.warn('Unable to restore coding draft:', draftError);
+          }
           setCodingSolutions(initialSolutions);
           setQuestions([]); // Ensure questions are empty
         } else {
@@ -5268,6 +5427,26 @@ const TestSession = ({ student }: { student: User }) => {
 
     loadTest();
   }, [id, student.student_id, student.id, navigate]);
+
+  useEffect(() => {
+    if (!hasStarted || isFinished || testDetails?.type !== 'coding' || !codingDraftKey) return;
+    if (Object.keys(codingSolutions).length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      try {
+        const savedAt = Date.now();
+        localStorage.setItem(codingDraftKey, JSON.stringify({
+          saved_at: new Date(savedAt).toISOString(),
+          solutions: codingSolutions
+        }));
+        setDraftSavedAt(savedAt);
+      } catch (draftError) {
+        console.warn('Unable to save coding draft:', draftError);
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [codingSolutions, codingDraftKey, hasStarted, isFinished, testDetails?.type]);
 
   useEffect(() => {
     if (isFinished || !hasStarted) return;
@@ -5372,6 +5551,7 @@ const TestSession = ({ student }: { student: User }) => {
 
   const currentQ = questions[currentIdx];
   const currentP = (problems || [])[currentIdx];
+  const usePlainCodeEditor = forcePlainCodeEditor || monacoLoadTimedOut;
 
   useEffect(() => {
     if (currentP && !codingSolutions[currentP.id]?.code) {
@@ -5386,6 +5566,18 @@ const TestSession = ({ student }: { student: User }) => {
       }));
     }
   }, [currentP, testDetails]);
+
+  useEffect(() => {
+    if (!currentP || testDetails?.type !== 'coding') return;
+    monacoEditorReadyRef.current = false;
+    setMonacoLoadTimedOut(false);
+
+    const timer = window.setTimeout(() => {
+      if (!monacoEditorReadyRef.current) setMonacoLoadTimedOut(true);
+    }, 4000);
+
+    return () => window.clearTimeout(timer);
+  }, [currentP?.id, testDetails?.type, monacoRetryKey]);
 
   if (isLoading && !isFinished) {
     return (
@@ -5439,7 +5631,7 @@ const TestSession = ({ student }: { student: User }) => {
               </div>
               <div>
                 <h4 className="font-bold text-zinc-900">Full-Screen Mode</h4>
-                <p className="text-sm text-zinc-500">The test runs in full-screen. Exiting twice will result in automatic submission.</p>
+                <p className="text-sm text-zinc-500">The test runs in full-screen. After 3 warnings, the next exit will result in automatic submission.</p>
               </div>
             </div>
             
@@ -5449,7 +5641,7 @@ const TestSession = ({ student }: { student: User }) => {
               </div>
               <div>
                 <h4 className="font-bold text-amber-900">No Tab Switching</h4>
-                <p className="text-sm text-amber-700/70">Switching tabs or windows is strictly prohibited. You will receive one warning. A second violation will result in automatic submission.</p>
+                <p className="text-sm text-amber-700/70">Switching tabs or windows is strictly prohibited. You will receive 3 warnings. The next violation will result in automatic submission.</p>
                 <p className="text-sm text-amber-800 mt-2 font-semibold">If a violation is recorded incorrectly, contact the test admin or invigilator.</p>
               </div>
             </div>
@@ -5486,7 +5678,7 @@ const TestSession = ({ student }: { student: User }) => {
 
   if (isFinished) {
     const totalCount = testDetails?.type === 'mcq' ? questions.length : problems.length;
-    const percentage = (score / totalCount) * 100;
+    const percentage = totalCount > 0 ? (score / totalCount) * 100 : 0;
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
         <AnimatePresence>
@@ -5528,7 +5720,7 @@ const TestSession = ({ student }: { student: User }) => {
                     }}
                     className="w-full bg-amber-500 text-white py-3.5 rounded-xl font-bold hover:bg-amber-600 transition-all shadow-lg shadow-amber-100"
                   >
-                    {proctoringWarning.title === 'Full-Screen Required' ? 'Re-enable Full Screen' : 'I Understand & Resume'}
+                    {proctoringWarning.title.includes('Full-Screen') ? 'Re-enable Full Screen' : 'I Understand & Resume'}
                   </button>
                 ) : (
                   <button
@@ -5569,12 +5761,33 @@ const TestSession = ({ student }: { student: User }) => {
             <div className="flex flex-col gap-3">
               <button 
                 onClick={() => navigate(`/student/results/${id}`)}
-                disabled={isSubmitting}
+                disabled={isSubmitting || Boolean(submissionSaveError)}
                 className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <LayoutDashboard className="w-5 h-5" />}
-                {isSubmitting ? 'Saving Result...' : 'View Result'}
+                {isSubmitting ? 'Saving Result...' : submissionSaveError ? 'Result Not Saved Yet' : 'View Result'}
               </button>
+
+              {submissionSaveError && (
+                <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-left text-amber-800">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold">Result saved locally</p>
+                      <p className="text-sm mt-1 leading-relaxed">{submissionSaveError}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={retryPendingSubmission}
+                    disabled={isSubmitting}
+                    className="mt-3 w-full bg-amber-500 text-white py-2.5 rounded-xl font-bold hover:bg-amber-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                    Retry Saving Result
+                  </button>
+                </div>
+              )}
 
               {testDetails?.type === 'coding' && (
                 <button 
@@ -5585,10 +5798,11 @@ const TestSession = ({ student }: { student: User }) => {
                     setShowStartModal(true);
                     setAnswers({});
                     setCodingSolutions({});
+                    setSubmissionSaveError(null);
                     setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
                     setCurrentIdx(0);
                   }}
-                  disabled={!contestEnded || isSubmitting}
+                  disabled={!contestEnded || isSubmitting || Boolean(submissionSaveError)}
                   title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
                   className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
                 >
@@ -5854,6 +6068,12 @@ const TestSession = ({ student }: { student: User }) => {
                           <span className="text-zinc-500 text-xs font-mono hidden md:inline">
                             {codingSolutions[currentP.id]?.language === 'java' ? 'Solution.java' : `solution.${codingSolutions[currentP.id]?.language === 'python' ? 'py' : codingSolutions[currentP.id]?.language === 'javascript' ? 'js' : codingSolutions[currentP.id]?.language === 'cpp' ? 'cpp' : 'c'}`}
                           </span>
+                          {draftSavedAt && (
+                            <span className="hidden lg:inline-flex items-center gap-1.5 text-[10px] font-bold text-zinc-500 bg-[#2d2d2d] px-2.5 py-1 rounded-lg border border-zinc-700">
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              Autosaved {new Date(draftSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
                           {hasRunFullyPassed(problemResults[currentP.id]) && (
                             <span className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-[10px] font-black uppercase tracking-wider">
                               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -5862,6 +6082,29 @@ const TestSession = ({ student }: { student: User }) => {
                           )}
                         </div>
                         <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (usePlainCodeEditor) {
+                                monacoEditorReadyRef.current = false;
+                                setForcePlainCodeEditor(false);
+                                setMonacoLoadTimedOut(false);
+                                setMonacoRetryKey(prev => prev + 1);
+                              } else {
+                                setForcePlainCodeEditor(true);
+                              }
+                            }}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border",
+                              usePlainCodeEditor
+                                ? "bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/20"
+                                : "bg-[#2d2d2d] hover:bg-zinc-700 text-zinc-300 border-zinc-700"
+                            )}
+                            title={usePlainCodeEditor ? "Try the Monaco code editor again" : "Use the plain fallback code editor"}
+                          >
+                            <Code2 className="w-3.5 h-3.5" />
+                            {usePlainCodeEditor ? 'Basic Editor' : 'Fallback Editor'}
+                          </button>
                           <button
                             onClick={() => setEditorExpanded((expanded) => !expanded)}
                             className="flex items-center gap-2 bg-[#2d2d2d] hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-zinc-700"
@@ -5892,61 +6135,89 @@ const TestSession = ({ student }: { student: User }) => {
                       </div>
                       
                       <div className="flex-1 relative bg-[#1e1e1e] min-h-0">
-                        <MonacoEditor
-                          height="100%"
-                          language={codingSolutions[currentP.id]?.language === 'cpp' ? 'cpp' : codingSolutions[currentP.id]?.language === 'python' ? 'python' : codingSolutions[currentP.id]?.language === 'javascript' ? 'javascript' : codingSolutions[currentP.id]?.language === 'java' ? 'java' : 'c'}
-                          theme="vs-dark"
-                          value={codingSolutions[currentP.id]?.code || ''}
-                          onMount={(editor) => {
-                            // Disable copy/paste/cut
-                            editor.onKeyDown((e: any) => {
-                              const { keyCode, ctrlKey, metaKey } = e;
-                              // Monaco KeyCodes: C=33, V=52, X=54
-                              if ((ctrlKey || metaKey) && (keyCode === 33 || keyCode === 52 || keyCode === 54)) {
-                                e.preventDefault();
-                                e.stopPropagation();
+                        {usePlainCodeEditor ? (
+                          <textarea
+                            value={codingSolutions[currentP.id]?.code || ''}
+                            onChange={(event) => setCodingSolutions(prev => ({
+                              ...prev,
+                              [currentP.id]: {
+                                ...prev[currentP.id],
+                                code: event.target.value
                               }
-                            });
-                            
-                            const domNode = editor.getDomNode();
-                            if (domNode) {
-                              const prevent = (e: any) => { e.preventDefault(); e.stopPropagation(); };
-                              domNode.addEventListener('copy', prevent, true);
-                              domNode.addEventListener('paste', prevent, true);
-                              domNode.addEventListener('cut', prevent, true);
-                            }
-                          }}
-                          onChange={(value) => setCodingSolutions(prev => ({
-                            ...prev,
-                            [currentP.id]: {
-                              ...prev[currentP.id],
-                              code: value || ''
-                            }
-                          }))}
-                          options={{
-                            minimap: { enabled: false },
-                            fontSize: editorFontSize,
-                            lineNumbers: 'on',
-                            roundedSelection: false,
-                            scrollBeyondLastLine: false,
-                            automaticLayout: true,
-                            padding: { top: 10, bottom: 10 },
-                            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                            scrollbar: {
-                              verticalScrollbarSize: 10,
-                              horizontalScrollbarSize: 10
-                            },
-                            readOnly: false,
-                            theme: 'vs-dark',
-                            smoothScrolling: true,
-                            cursorBlinking: 'smooth',
-                            cursorSmoothCaretAnimation: 'on',
-                            contextmenu: false,
-                            quickSuggestions: false,
-                            snippetSuggestions: 'none',
-                            wordBasedSuggestions: 'off',
-                          }}
-                        />
+                            }))}
+                            spellCheck={false}
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            className="w-full h-full resize-none bg-[#1e1e1e] text-zinc-100 outline-none p-4 font-mono leading-relaxed custom-scrollbar"
+                            style={{ fontSize: editorFontSize }}
+                            placeholder="Write your code here..."
+                          />
+                        ) : (
+                          <MonacoEditor
+                            key={`${currentP.id}-${monacoRetryKey}`}
+                            height="100%"
+                            language={codingSolutions[currentP.id]?.language === 'cpp' ? 'cpp' : codingSolutions[currentP.id]?.language === 'python' ? 'python' : codingSolutions[currentP.id]?.language === 'javascript' ? 'javascript' : codingSolutions[currentP.id]?.language === 'java' ? 'java' : 'c'}
+                            theme="vs-dark"
+                            value={codingSolutions[currentP.id]?.code || ''}
+                            loading={(
+                              <div className="h-full flex items-center justify-center bg-[#1e1e1e] text-zinc-500 font-mono text-sm">
+                                Opening code editor...
+                              </div>
+                            )}
+                            onMount={(editor) => {
+                              monacoEditorReadyRef.current = true;
+                              setMonacoLoadTimedOut(false);
+
+                              // Disable copy/paste/cut
+                              editor.onKeyDown((e: any) => {
+                                const { keyCode, ctrlKey, metaKey } = e;
+                                // Monaco KeyCodes: C=33, V=52, X=54
+                                if ((ctrlKey || metaKey) && (keyCode === 33 || keyCode === 52 || keyCode === 54)) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }
+                              });
+                              
+                              const domNode = editor.getDomNode();
+                              if (domNode) {
+                                const prevent = (e: any) => { e.preventDefault(); e.stopPropagation(); };
+                                domNode.addEventListener('copy', prevent, true);
+                                domNode.addEventListener('paste', prevent, true);
+                                domNode.addEventListener('cut', prevent, true);
+                              }
+                            }}
+                            onChange={(value) => setCodingSolutions(prev => ({
+                              ...prev,
+                              [currentP.id]: {
+                                ...prev[currentP.id],
+                                code: value || ''
+                              }
+                            }))}
+                            options={{
+                              minimap: { enabled: false },
+                              fontSize: editorFontSize,
+                              lineNumbers: 'on',
+                              roundedSelection: false,
+                              scrollBeyondLastLine: false,
+                              automaticLayout: true,
+                              padding: { top: 10, bottom: 10 },
+                              fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                              scrollbar: {
+                                verticalScrollbarSize: 10,
+                                horizontalScrollbarSize: 10
+                              },
+                              readOnly: false,
+                              theme: 'vs-dark',
+                              smoothScrolling: true,
+                              cursorBlinking: 'smooth',
+                              cursorSmoothCaretAnimation: 'on',
+                              contextmenu: false,
+                              quickSuggestions: false,
+                              snippetSuggestions: 'none',
+                              wordBasedSuggestions: 'off',
+                            }}
+                          />
+                        )}
                       </div>
                     </div>
 
@@ -7683,9 +7954,11 @@ export default function App() {
   const [newOwnPassword, setNewOwnPassword] = useState('');
   const [showNetworkPanel, setShowNetworkPanel] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' });
+  const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
     const unsubscribe = window.adhiArena?.updates.onStatus(setUpdateStatus);
+    window.adhiArena?.updates.getVersion().then(setAppVersion).catch(() => undefined);
     return () => unsubscribe?.();
   }, []);
 
@@ -7702,6 +7975,19 @@ export default function App() {
       alert('Update checks are available in the installed ADHI ARENA application.');
       return;
     }
+
+    if (['checking', 'downloading', 'installing'].includes(updateStatus.state)) return;
+
+    if (updateStatus.state === 'downloaded') {
+      setUpdateStatus(prev => ({ ...prev, state: 'installing' }));
+      const result = await window.adhiArena.updates.install();
+      if (!result.ok && result.message) {
+        setUpdateStatus({ state: 'downloaded', version: updateStatus.version, message: result.message });
+        alert(result.message);
+      }
+      return;
+    }
+
     setUpdateStatus({ state: 'checking' });
     const result = await window.adhiArena.updates.check();
     if (!result.ok && result.message) {
@@ -7739,6 +8025,7 @@ export default function App() {
           onOpenNetwork={() => setShowNetworkPanel(true)}
           onCheckUpdates={handleCheckUpdates}
           updateStatus={updateStatus}
+          appVersion={appVersion}
         />
         
         <main className="flex-1">

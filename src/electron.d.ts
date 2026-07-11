@@ -34,6 +34,7 @@ declare global {
       };
       updates: {
         check(): Promise<{ ok: boolean; message?: string }>;
+        install(): Promise<{ ok: boolean; message?: string }>;
         getVersion(): Promise<string>;
         openAdminReleasePage(): Promise<void>;
         onStatus(callback: (status: {

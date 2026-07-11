@@ -116,6 +116,15 @@ async function offerUpdateDownload() {
     if (result.response === 0) {
       sendUpdateStatus({ state: "downloading", version: pendingUpdateInfo.version, percent: 0 });
       await autoUpdater.downloadUpdate();
+      if (!downloadedUpdateInfo && pendingUpdateInfo) {
+        downloadedUpdateInfo = pendingUpdateInfo;
+        sendUpdateStatus({
+          state: "downloaded",
+          version: pendingUpdateInfo.version,
+          percent: 100,
+          message: "Downloaded. Click Install to restart and update.",
+        });
+      }
     } else {
       sendUpdateStatus({ state: "available", version: pendingUpdateInfo.version });
     }
@@ -194,9 +203,10 @@ function setupAutoUpdater(window) {
       state: examActive ? "deferred" : "downloaded",
       version: info.version,
       percent: 100,
-      message: examActive ? "Installation deferred until the active test ends." : undefined,
+      message: examActive
+        ? "Installation deferred until the active test ends."
+        : "Downloaded. Click Install to restart and update.",
     });
-    offerRestartForUpdate();
   });
   autoUpdater.on("error", (error) =>
     sendUpdateStatus({ state: "error", message: error?.message || "Unable to check for updates." }),
@@ -215,16 +225,42 @@ ipcMain.handle("updates:check", async () => {
   if (!app.isPackaged) return { ok: false, message: "Update checks are available in installed builds." };
   if (!autoUpdater) return { ok: false, message: "The update service is not ready." };
   try {
+    if (downloadedUpdateInfo) {
+      sendUpdateStatus({
+        state: "downloaded",
+        version: downloadedUpdateInfo.version,
+        percent: 100,
+        message: "Downloaded. Click Install to restart and update.",
+      });
+      return { ok: true };
+    }
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (error) {
     return { ok: false, message: error?.message || "Unable to check for updates." };
   }
 });
+ipcMain.handle("updates:install", async () => {
+  if (!app.isPackaged) return { ok: false, message: "Update installation is available in installed builds." };
+  if (!autoUpdater) return { ok: false, message: "The update service is not ready." };
+  if (examActive) return { ok: false, message: "Finish the active test before installing the update." };
+  if (!downloadedUpdateInfo) return { ok: false, message: "No downloaded update is ready to install." };
+
+      sendUpdateStatus({ state: "installing", version: downloadedUpdateInfo.version });
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return { ok: true };
+});
 ipcMain.on("exam:set-active", (_event, active) => {
   examActive = Boolean(active);
   if (!examActive) {
-    if (downloadedUpdateInfo) offerRestartForUpdate();
+    if (downloadedUpdateInfo) {
+      sendUpdateStatus({
+        state: "downloaded",
+        version: downloadedUpdateInfo.version,
+        percent: 100,
+        message: "Downloaded. Click Install to restart and update.",
+      });
+    }
     else if (pendingUpdateInfo) offerUpdateDownload();
   }
 });

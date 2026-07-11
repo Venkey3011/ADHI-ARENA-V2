@@ -924,9 +924,20 @@ async function startServer() {
 
     // Results
     app.post("/api/results", async (req, res) => {
-      const { test_id, student_name, student_id, score, total_questions, responses, coding_details } = req.body;
+      const { test_id, student_name, student_id, score, total_questions, responses, coding_details, client_submission_id } = req.body;
       
       try {
+        if (client_submission_id) {
+          const existing = await db.collection("results").findOne({ client_submission_id });
+          if (existing) {
+            return res.json({
+              id: existing._id.toString(),
+              score: existing.score,
+              coding_details: existing.coding_details || []
+            });
+          }
+        }
+
         let finalScore = score;
         let processedCodingDetails = [];
 
@@ -966,6 +977,7 @@ async function startServer() {
 
         const result = await db.collection("results").insertOne({
           test_id,
+          client_submission_id: client_submission_id || null,
           student_name,
           student_id,
           score: finalScore,
