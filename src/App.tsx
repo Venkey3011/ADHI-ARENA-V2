@@ -4981,16 +4981,14 @@ const StudentDashboard = ({ student }: { student: User }) => {
                           >
                             View Result
                           </button>
-                          {test.type === 'coding' && (
-                            <button 
-                              onClick={() => navigate(`/student/test/${test.id}`)}
-                              disabled={!contestEnded}
-                              title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
-                              className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2 text-sm disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
-                            >
-                              {contestEnded ? 'Try Again' : 'Try Again (After Contest)'}
-                            </button>
-                          )}
+                          <button 
+                            onClick={() => navigate(`/student/test/${test.id}`)}
+                            disabled={!contestEnded}
+                            title={contestEnded ? 'Retry this test' : 'Try Again becomes available after the contest ends'}
+                            className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2 text-sm disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
+                          >
+                            {contestEnded ? 'Try Again' : 'Try Again (After Contest)'}
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -5099,6 +5097,7 @@ const TestSession = ({ student }: { student: User }) => {
   const [monacoRetryKey, setMonacoRetryKey] = useState(0);
   const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
   const [submissionSaveError, setSubmissionSaveError] = useState<string | null>(null);
+  const [isRetryAttempt, setIsRetryAttempt] = useState(false);
   const [compilerAvailability, setCompilerAvailability] = useState<Record<string, boolean>>({});
   const timerDeadlineRef = useRef<number | null>(null);
   const monacoEditorReadyRef = useRef(false);
@@ -5361,13 +5360,9 @@ const TestSession = ({ student }: { student: User }) => {
         if (!existingResultsRes.ok) throw new Error('Failed to verify previous attempts');
         const existingResults = await existingResultsRes.json();
         const alreadyDone = existingResults.some((result: any) => String(result.test_id) === String(id));
+        let retryAllowed = false;
 
         if (alreadyDone) {
-          if (test.type === 'mcq') {
-            alert('You have already completed this MCQ test.');
-            navigate('/student');
-            return;
-          }
           if (!test.end_time) {
             alert('Try Again is unavailable because this contest has no configured end time.');
             navigate('/student');
@@ -5378,8 +5373,10 @@ const TestSession = ({ student }: { student: User }) => {
             navigate('/student');
             return;
           }
+          retryAllowed = true;
         }
 
+        setIsRetryAttempt(retryAllowed);
         setTestDetails(test);
         setTimeLeft(test.duration_minutes * 60);
 
@@ -5494,6 +5491,29 @@ const TestSession = ({ student }: { student: User }) => {
     const timer = window.setInterval(updateCountdown, 250);
     return () => window.clearInterval(timer);
   }, [isFinished, hasStarted, testDetails?.duration_minutes]);
+
+  useEffect(() => {
+    if (!hasStarted || isFinished || isRetryAttempt || !testDetails?.end_time) return;
+
+    const endAt = new Date(testDetails.end_time).getTime();
+    if (!Number.isFinite(endAt)) return;
+
+    let submittedForContestEnd = false;
+    const submitIfContestEnded = () => {
+      if (submittedForContestEnd || Date.now() < endAt) return;
+      submittedForContestEnd = true;
+      setProctoringWarning({
+        title: "Contest Ended",
+        message: "The contest end time has been reached. Your current answers are being submitted and your result will be shown.",
+        type: 'violation'
+      });
+      handleSubmitRef.current();
+    };
+
+    submitIfContestEnded();
+    const timer = window.setInterval(submitIfContestEnded, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasStarted, isFinished, isRetryAttempt, testDetails?.end_time]);
 
   const handleStartTest = async () => {
     const initialSeconds = timeLeft ?? (testDetails?.duration_minutes || 0) * 60;
@@ -5809,27 +5829,28 @@ const TestSession = ({ student }: { student: User }) => {
                 </div>
               )}
 
-              {testDetails?.type === 'coding' && (
-                <button 
-                  onClick={() => {
-                    timerDeadlineRef.current = null;
-                    setIsFinished(false);
-                    setHasStarted(false);
-                    setShowStartModal(true);
-                    setAnswers({});
-                    setCodingSolutions({});
-                    setSubmissionSaveError(null);
-                    setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
-                    setCurrentIdx(0);
-                  }}
-                  disabled={!contestEnded || isSubmitting || Boolean(submissionSaveError)}
-                  title={contestEnded ? 'Retry this contest' : 'Try Again becomes available after the contest ends'}
-                  className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
-                >
-                  <RotateCcw className="w-5 h-5" />
-                  {contestEnded ? 'Try Again' : 'Try Again (Available After Contest Ends)'}
-                </button>
-              )}
+              <button 
+                onClick={() => {
+                  timerDeadlineRef.current = null;
+                  setIsFinished(false);
+                  setHasStarted(false);
+                  setShowStartModal(true);
+                  setAnswers({});
+                  setCodingSolutions({});
+                  setProblemResults({});
+                  setLastRunResult(null);
+                  setSubmissionSaveError(null);
+                  setIsRetryAttempt(true);
+                  setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
+                  setCurrentIdx(0);
+                }}
+                disabled={!contestEnded || isSubmitting || Boolean(submissionSaveError)}
+                title={contestEnded ? 'Retry this test' : 'Try Again becomes available after the contest ends'}
+                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-5 h-5" />
+                {contestEnded ? 'Try Again' : 'Try Again (Available After Contest Ends)'}
+              </button>
 
               <button 
                 onClick={() => navigate('/student', { state: { refreshAfterSubmit: Date.now() } })}
