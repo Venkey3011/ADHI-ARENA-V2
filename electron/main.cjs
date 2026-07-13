@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const path = require("path");
@@ -15,6 +16,55 @@ let autoUpdater;
 
 const RELEASE_WORKFLOW_URL =
   "https://github.com/Venkey3011/ADHI-ARENA-V2/actions/workflows/release.yml";
+
+function downloadedUpdatePath() {
+  return path.join(app.getPath("userData"), "downloaded-update.json");
+}
+
+function persistDownloadedUpdate(info) {
+  if (!info?.version) return;
+  try {
+    fs.writeFileSync(
+      downloadedUpdatePath(),
+      JSON.stringify({ version: info.version, savedAt: new Date().toISOString() }),
+      "utf8",
+    );
+  } catch {
+    // Update persistence is best-effort; the updater cache remains authoritative.
+  }
+}
+
+function loadPersistedDownloadedUpdate() {
+  try {
+    const raw = fs.readFileSync(downloadedUpdatePath(), "utf8");
+    const saved = JSON.parse(raw);
+    return saved?.version ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedDownloadedUpdate() {
+  try {
+    fs.rmSync(downloadedUpdatePath(), { force: true });
+  } catch {
+    // Ignore cleanup failures; the next successful update will overwrite it.
+  }
+}
+
+function sendDownloadedUpdateStatus(message) {
+  if (!downloadedUpdateInfo) return;
+  sendUpdateStatus({
+    state: examActive ? "deferred" : "downloaded",
+    version: downloadedUpdateInfo.version,
+    percent: 100,
+    message:
+      message ||
+      (examActive
+        ? "Installation deferred until the active test ends."
+        : "Downloaded. Click Install to restart and update."),
+  });
+}
 
 function findAvailablePort() {
   return new Promise((resolve, reject) => {
@@ -160,6 +210,35 @@ async function offerRestartForUpdate() {
   }
 }
 
+async function downloadPendingUpdate() {
+  if (downloadedUpdateInfo) {
+    sendDownloadedUpdateStatus();
+    return { ok: true, state: "downloaded" };
+  }
+
+  if (!pendingUpdateInfo) {
+    const result = await autoUpdater.checkForUpdates();
+    if (result?.updateInfo?.version && result.updateInfo.version !== app.getVersion()) {
+      pendingUpdateInfo = result.updateInfo;
+    }
+  }
+
+  if (!pendingUpdateInfo) {
+    return { ok: false, message: "No update is available right now." };
+  }
+
+  sendUpdateStatus({ state: "downloading", version: pendingUpdateInfo.version, percent: 0 });
+  await autoUpdater.downloadUpdate();
+
+  if (!downloadedUpdateInfo && pendingUpdateInfo) {
+    downloadedUpdateInfo = pendingUpdateInfo;
+    persistDownloadedUpdate(downloadedUpdateInfo);
+  }
+
+  sendDownloadedUpdateStatus();
+  return { ok: true, state: "downloaded" };
+}
+
 function setupAutoUpdater(window) {
   if (!app.isPackaged) {
     sendUpdateStatus({ state: "development", message: "Updates are checked in installed builds." });
@@ -177,18 +256,31 @@ function setupAutoUpdater(window) {
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
 
+  const persistedUpdate = loadPersistedDownloadedUpdate();
+  if (persistedUpdate?.version && persistedUpdate.version !== app.getVersion()) {
+    downloadedUpdateInfo = persistedUpdate;
+    setTimeout(() => sendDownloadedUpdateStatus(), 1_000);
+  } else if (persistedUpdate?.version === app.getVersion()) {
+    clearPersistedDownloadedUpdate();
+  }
+
   autoUpdater.on("checking-for-update", () => sendUpdateStatus({ state: "checking" }));
-  autoUpdater.on("update-not-available", (info) =>
-    sendUpdateStatus({ state: "current", version: info?.version || app.getVersion() }),
-  );
+  autoUpdater.on("update-not-available", (info) => {
+    pendingUpdateInfo = null;
+    if (!downloadedUpdateInfo) clearPersistedDownloadedUpdate();
+    sendUpdateStatus({ state: "current", version: info?.version || app.getVersion() });
+  });
   autoUpdater.on("update-available", (info) => {
     pendingUpdateInfo = info;
+    if (downloadedUpdateInfo?.version === info.version) {
+      sendDownloadedUpdateStatus();
+      return;
+    }
     sendUpdateStatus({
       state: examActive ? "deferred" : "available",
       version: info.version,
       message: examActive ? "Update deferred until the active test ends." : undefined,
     });
-    offerUpdateDownload();
   });
   autoUpdater.on("download-progress", (progress) =>
     sendUpdateStatus({
@@ -199,14 +291,8 @@ function setupAutoUpdater(window) {
   );
   autoUpdater.on("update-downloaded", (info) => {
     downloadedUpdateInfo = info;
-    sendUpdateStatus({
-      state: examActive ? "deferred" : "downloaded",
-      version: info.version,
-      percent: 100,
-      message: examActive
-        ? "Installation deferred until the active test ends."
-        : "Downloaded. Click Install to restart and update.",
-    });
+    persistDownloadedUpdate(info);
+    sendDownloadedUpdateStatus();
   });
   autoUpdater.on("error", (error) =>
     sendUpdateStatus({ state: "error", message: error?.message || "Unable to check for updates." }),
@@ -226,12 +312,7 @@ ipcMain.handle("updates:check", async () => {
   if (!autoUpdater) return { ok: false, message: "The update service is not ready." };
   try {
     if (downloadedUpdateInfo) {
-      sendUpdateStatus({
-        state: "downloaded",
-        version: downloadedUpdateInfo.version,
-        percent: 100,
-        message: "Downloaded. Click Install to restart and update.",
-      });
+      sendDownloadedUpdateStatus();
       return { ok: true };
     }
     await autoUpdater.checkForUpdates();
@@ -240,13 +321,25 @@ ipcMain.handle("updates:check", async () => {
     return { ok: false, message: error?.message || "Unable to check for updates." };
   }
 });
+ipcMain.handle("updates:download", async () => {
+  if (!app.isPackaged) return { ok: false, message: "Update downloads are available in installed builds." };
+  if (!autoUpdater) return { ok: false, message: "The update service is not ready." };
+  if (examActive) return { ok: false, message: "Finish the active test before downloading the update." };
+  try {
+    return await downloadPendingUpdate();
+  } catch (error) {
+    const message = error?.message || "Update download failed.";
+    sendUpdateStatus({ state: "available", version: pendingUpdateInfo?.version, message });
+    return { ok: false, message };
+  }
+});
 ipcMain.handle("updates:install", async () => {
   if (!app.isPackaged) return { ok: false, message: "Update installation is available in installed builds." };
   if (!autoUpdater) return { ok: false, message: "The update service is not ready." };
   if (examActive) return { ok: false, message: "Finish the active test before installing the update." };
   if (!downloadedUpdateInfo) return { ok: false, message: "No downloaded update is ready to install." };
 
-      sendUpdateStatus({ state: "installing", version: downloadedUpdateInfo.version });
+  sendUpdateStatus({ state: "installing", version: downloadedUpdateInfo.version });
   setImmediate(() => autoUpdater.quitAndInstall(false, true));
   return { ok: true };
 });
@@ -254,14 +347,11 @@ ipcMain.on("exam:set-active", (_event, active) => {
   examActive = Boolean(active);
   if (!examActive) {
     if (downloadedUpdateInfo) {
-      sendUpdateStatus({
-        state: "downloaded",
-        version: downloadedUpdateInfo.version,
-        percent: 100,
-        message: "Downloaded. Click Install to restart and update.",
-      });
+      sendDownloadedUpdateStatus();
     }
-    else if (pendingUpdateInfo) offerUpdateDownload();
+    else if (pendingUpdateInfo) {
+      sendUpdateStatus({ state: "available", version: pendingUpdateInfo.version });
+    }
   }
 });
 

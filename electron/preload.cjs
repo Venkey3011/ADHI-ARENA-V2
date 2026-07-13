@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("adhiArena", {
   },
   updates: {
     check: () => ipcRenderer.invoke("updates:check"),
+    download: () => ipcRenderer.invoke("updates:download"),
     install: () => ipcRenderer.invoke("updates:install"),
     getVersion: () => ipcRenderer.invoke("updates:version"),
     openAdminReleasePage: () => ipcRenderer.invoke("updates:open-admin-release-page"),

@@ -202,8 +202,8 @@ const Navbar = ({
                   ? 'Install'
                 : updateStatus.state === 'installing'
                   ? 'Installing'
-                : updateStatus.state === 'available'
-                  ? 'Update'
+                : ['available', 'deferred'].includes(updateStatus.state)
+                  ? 'Download'
                   : 'Updates'}
             </span>
           </button>
@@ -4240,6 +4240,7 @@ const TestManagement = () => {
   const [generateCount, setGenerateCount] = useState<number>(10);
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'questions' | 'leaderboard'>('questions');
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
   const [newQ, setNewQ] = useState({
     text: '',
@@ -4409,6 +4410,27 @@ const TestManagement = () => {
     }
   };
 
+  const handleSaveTestSettings = async () => {
+    if (!test) return;
+    try {
+      const res = await fetch(`/api/tests/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(test)
+      });
+      if (res.ok) {
+        setIsSettingsModalOpen(false);
+        fetchTest();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to save test settings");
+      }
+    } catch (error) {
+      console.error('Failed to update test settings:', error);
+      alert("Error saving test settings.");
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       <button 
@@ -4445,7 +4467,14 @@ const TestManagement = () => {
         </div>
         
         {test?.type === 'mcq' && activeTab === 'questions' && (
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
+            <button 
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="flex items-center gap-2 bg-white text-zinc-700 border border-zinc-200 px-4 py-2 rounded-lg font-medium hover:bg-zinc-50 transition-all shadow-sm"
+            >
+              <Settings className="w-5 h-5" />
+              Settings
+            </button>
             <button 
               onClick={() => setIsGenerating(true)}
               className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-emerald-700 transition-all shadow-sm"
@@ -4595,6 +4624,103 @@ const TestManagement = () => {
       )}
 
       <AnimatePresence>
+        {isSettingsModalOpen && test && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-2xl w-full max-w-lg p-8 shadow-2xl overflow-y-auto max-h-[90vh]"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-zinc-900">Test Settings</h2>
+                <button onClick={() => setIsSettingsModalOpen(false)} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
+                  <XCircle className="w-6 h-6 text-zinc-400" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">Title</label>
+                  <input 
+                    type="text" 
+                    value={test.title || ''} 
+                    onChange={e => setTest({...test, title: e.target.value})}
+                    className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">Description</label>
+                  <textarea 
+                    value={test.description || ''} 
+                    onChange={e => setTest({...test, description: e.target.value})}
+                    className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-1">Duration (mins)</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      value={test.duration_minutes || 0} 
+                      onChange={e => setTest({...test, duration_minutes: parseInt(e.target.value) || 0})}
+                      className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-1">Negative Marking</label>
+                    <select 
+                      value={test.negative_marks || 0} 
+                      onChange={e => setTest({...test, negative_marks: parseInt(e.target.value)})}
+                      className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    >
+                      <option value={0}>No</option>
+                      <option value={1}>Yes</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-1">Start Time</label>
+                    <input 
+                      type="datetime-local" 
+                      value={test.start_time ? new Date(test.start_time).toISOString().slice(0, 16) : ''} 
+                      onChange={e => setTest({...test, start_time: e.target.value})}
+                      className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-700 mb-1">End Time</label>
+                    <input 
+                      type="datetime-local" 
+                      value={test.end_time ? new Date(test.end_time).toISOString().slice(0, 16) : ''} 
+                      onChange={e => setTest({...test, end_time: e.target.value})}
+                      className="w-full px-4 py-2 rounded-lg border border-zinc-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-6 flex gap-3">
+                  <button 
+                    onClick={() => setIsSettingsModalOpen(false)}
+                    className="flex-1 px-4 py-2.5 rounded-lg font-medium text-zinc-600 hover:bg-zinc-100 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleSaveTestSettings}
+                    className="flex-1 px-4 py-2.5 rounded-lg font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shadow-sm"
+                  >
+                    Save Settings
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {questionToDelete && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
             <motion.div 
@@ -8024,6 +8150,16 @@ export default function App() {
       const result = await window.adhiArena.updates.install();
       if (!result.ok && result.message) {
         setUpdateStatus({ state: 'downloaded', version: updateStatus.version, message: result.message });
+        alert(result.message);
+      }
+      return;
+    }
+
+    if (['available', 'deferred'].includes(updateStatus.state)) {
+      setUpdateStatus(prev => ({ ...prev, state: 'downloading', percent: 0 }));
+      const result = await window.adhiArena.updates.download();
+      if (!result.ok && result.message) {
+        setUpdateStatus({ state: 'available', version: updateStatus.version, message: result.message });
         alert(result.message);
       }
       return;
