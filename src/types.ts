@@ -119,6 +119,7 @@ export interface Result {
   test_title: string;
   student_name: string;
   student_id: string;
+  student_department?: string;
   score: number;
   total_questions: number;
   responses?: string; // JSON string of student answers

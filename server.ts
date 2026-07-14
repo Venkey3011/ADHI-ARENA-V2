@@ -1034,11 +1034,37 @@ async function startServer() {
           },
           { $unwind: { path: "$test", preserveNullAndEmptyArrays: true } },
           {
+            $lookup: {
+              from: "users",
+              let: { resultStudentId: "$student_id" },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ["$role", "student"] },
+                        {
+                          $eq: [
+                            { $toLower: { $trim: { input: { $ifNull: ["$student_id", ""] } } } },
+                            { $toLower: { $trim: { input: { $ifNull: ["$$resultStudentId", ""] } } } }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              as: "student"
+            }
+          },
+          { $unwind: { path: "$student", preserveNullAndEmptyArrays: true } },
+          {
             $project: {
               _id: 1,
               test_id: 1,
               student_name: 1,
               student_id: 1,
+              student_department: { $ifNull: ["$student.department", "N/A"] },
               score: 1,
               total_questions: 1,
               responses: 1,
@@ -1088,11 +1114,37 @@ async function startServer() {
           },
           { $unwind: { path: "$test", preserveNullAndEmptyArrays: true } },
           {
+            $lookup: {
+              from: "users",
+              let: { resultStudentId: "$student_id" },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ["$role", "student"] },
+                        {
+                          $eq: [
+                            { $toLower: { $trim: { input: { $ifNull: ["$student_id", ""] } } } },
+                            { $toLower: { $trim: { input: { $ifNull: ["$$resultStudentId", ""] } } } }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              as: "student"
+            }
+          },
+          { $unwind: { path: "$student", preserveNullAndEmptyArrays: true } },
+          {
             $project: {
               _id: 1,
               test_id: 1,
               student_name: 1,
               student_id: 1,
+              student_department: { $ifNull: ["$student.department", "N/A"] },
               score: 1,
               total_questions: 1,
               responses: 1,

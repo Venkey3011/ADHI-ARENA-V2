@@ -2729,6 +2729,7 @@ const AdminDashboard = () => {
   const filteredResults = results.filter(result => 
     result.student_name?.toLowerCase().includes(resultsSearchQuery.toLowerCase()) ||
     result.student_id?.toLowerCase().includes(resultsSearchQuery.toLowerCase()) ||
+    result.student_department?.toLowerCase().includes(resultsSearchQuery.toLowerCase()) ||
     result.test_title?.toLowerCase().includes(resultsSearchQuery.toLowerCase())
   );
 
@@ -2837,9 +2838,9 @@ const AdminDashboard = () => {
                 <tr>
                   <th className="px-6 py-3">Student Name</th>
                   <th className="px-6 py-3">Student ID</th>
+                  <th className="px-6 py-3">Department</th>
                   <th className="px-6 py-3">Test Title</th>
                   <th className="px-6 py-3">Score</th>
-                  <th className="px-6 py-3">Completed At</th>
                   <th className="px-6 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -2848,6 +2849,7 @@ const AdminDashboard = () => {
                   <tr key={result.id} className="hover:bg-zinc-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-zinc-900">{result.student_name}</td>
                     <td className="px-6 py-4 font-mono text-zinc-500">{result.student_id}</td>
+                    <td className="px-6 py-4 text-zinc-600">{result.student_department || 'N/A'}</td>
                     <td className="px-6 py-4 text-zinc-600">{result.test_title}</td>
                     <td className="px-6 py-4">
                       <span className={cn(
@@ -2856,9 +2858,6 @@ const AdminDashboard = () => {
                       )}>
                         {result.score} / {result.total_questions}
                       </span>
-                    </td>
-                    <td className="px-6 py-4 text-zinc-400 text-xs">
-                      {new Date(result.completed_at).toLocaleString()}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex flex-col items-end gap-2">
@@ -4305,10 +4304,10 @@ const TestManagement = () => {
       Rank: i + 1,
       'Student Name': r.student_name,
       'Student ID': r.student_id,
+      Department: r.student_department || 'N/A',
       Score: r.score,
       'Total Questions': r.total_questions,
-      'Percentage': `${Math.round((r.score / r.total_questions) * 100)}%`,
-      'Completed At': new Date(r.completed_at).toLocaleString()
+      'Percentage': `${Math.round((r.score / r.total_questions) * 100)}%`
     })));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Leaderboard");
@@ -4573,9 +4572,9 @@ const TestManagement = () => {
                   <th className="px-6 py-4 font-semibold text-zinc-900">Rank</th>
                   <th className="px-6 py-4 font-semibold text-zinc-900">Student Name</th>
                   <th className="px-6 py-4 font-semibold text-zinc-900">Student ID</th>
+                  <th className="px-6 py-4 font-semibold text-zinc-900">Department</th>
                   <th className="px-6 py-4 font-semibold text-zinc-900">Score</th>
                   <th className="px-6 py-4 font-semibold text-zinc-900">Percentage</th>
-                  <th className="px-6 py-4 font-semibold text-zinc-900">Completed At</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
@@ -4594,6 +4593,7 @@ const TestManagement = () => {
                     </td>
                     <td className="px-6 py-4 text-zinc-900 font-medium">{result.student_name}</td>
                     <td className="px-6 py-4 text-zinc-500 font-mono">{result.student_id}</td>
+                    <td className="px-6 py-4 text-zinc-600">{result.student_department || 'N/A'}</td>
                     <td className="px-6 py-4">
                       <span className={cn(
                         "px-2 py-1 rounded-full text-xs font-bold",
@@ -4604,9 +4604,6 @@ const TestManagement = () => {
                     </td>
                     <td className="px-6 py-4 text-zinc-600 font-medium">
                       {Math.round((result.score / result.total_questions) * 100)}%
-                    </td>
-                    <td className="px-6 py-4 text-zinc-500">
-                      {new Date(result.completed_at).toLocaleString()}
                     </td>
                   </tr>
                 ))}
