@@ -5204,6 +5204,7 @@ const TestSession = ({ student }: { student: User }) => {
   const [percentage, setPercentage] = useState(0);
   const [testDetails, setTestDetails] = useState<Test | null>(null);
   const [showSubmitConfirmation, setShowSubmitConfirmation] = useState(false);
+  const [showExitConfirmation, setShowExitConfirmation] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
   const [showStartModal, setShowStartModal] = useState(true);
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
@@ -5232,6 +5233,17 @@ const TestSession = ({ student }: { student: User }) => {
   const examIsActive = hasStarted && !isFinished;
   const codingDraftKey = getCodingDraftKey(id, student);
   const pendingSubmissionKey = getPendingSubmissionKey(id, student);
+
+  const reLockExamWindow = async () => {
+    window.adhiArena?.exam.setActive(true);
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Electron kiosk mode remains active even when browser fullscreen is denied.
+    }
+  };
 
   useEffect(() => {
     window.adhiArena?.exam.setActive(examIsActive);
@@ -5352,52 +5364,16 @@ const TestSession = ({ student }: { student: User }) => {
 
     const handleVisibilityChange = () => {
       if (document.hidden && hasStarted && !isFinished) {
-        setTabSwitchCount(prev => {
-          const newCount = prev + 1;
-          if (newCount <= MAX_PROCTORING_WARNINGS) {
-            setProctoringWarning({
-              title: `Tab Switch Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
-              message: `Switching tabs is strictly prohibited. Please stay on this tab. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
-              type: 'warning'
-            });
-          } else {
-            setProctoringWarning({
-              title: "Proctoring Violation",
-              message: "Multiple tab switches were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
-              type: 'violation'
-            });
-            handleSubmitRef.current();
-          }
-          return newCount;
-        });
+        setTabSwitchCount(prev => prev + 1);
+        setTimeout(reLockExamWindow, 100);
       }
     };
 
     const handleBlur = () => {
-      // Small delay to avoid triggering on alert itself
       setTimeout(() => {
         if (!document.hasFocus() && hasStarted && !isFinished) {
-          // If document is hidden, it's handled by visibilitychange
-          if (document.hidden) return;
-
-          setTabSwitchCount(prev => {
-            const newCount = prev + 1;
-            if (newCount <= MAX_PROCTORING_WARNINGS) {
-              setProctoringWarning({
-                title: `Focus Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
-                message: `You navigated away from the test window. Please keep the test window focused. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
-                type: 'warning'
-              });
-            } else {
-              setProctoringWarning({
-                title: "Proctoring Violation",
-                message: "Multiple focus loss incidents were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
-                type: 'violation'
-              });
-              handleSubmitRef.current();
-            }
-            return newCount;
-          });
+          setTabSwitchCount(prev => prev + 1);
+          reLockExamWindow();
         }
       }, 100);
     };
@@ -5414,29 +5390,28 @@ const TestSession = ({ student }: { student: User }) => {
 
     const handleFullScreenChange = () => {
       if (!document.fullscreenElement && hasStarted && !isFinished) {
-        setFullScreenExitCount(prev => {
-          const newCount = prev + 1;
-          if (newCount <= MAX_PROCTORING_WARNINGS) {
-            setProctoringWarning({
-              title: `Full-Screen Warning ${newCount}/${MAX_PROCTORING_WARNINGS}`,
-              message: `Full-screen mode is required for this test. Please re-enable it immediately. After ${MAX_PROCTORING_WARNINGS} warnings, the next violation will automatically submit your test and show your result.`,
-              type: 'warning'
-            });
-          } else {
-            setProctoringWarning({
-              title: "Proctoring Violation",
-              message: "Multiple full-screen exits were detected after the allowed warnings. Your test is being submitted automatically and your result will be shown.",
-              type: 'violation'
-            });
-            handleSubmitRef.current();
-          }
-          return newCount;
-        });
+        setFullScreenExitCount(prev => prev + 1);
+        setTimeout(reLockExamWindow, 100);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const blockedPlainKeys = ['escape', 'f11'];
+      const blockedWithModifier = ['tab', 'f4', 'r', 'w', 'q', 'n', 't'];
+      if (
+        blockedPlainKeys.includes(key) ||
+        ((e.altKey || e.metaKey || e.ctrlKey) && blockedWithModifier.includes(key))
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        reLockExamWindow();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleBlur);
+    window.addEventListener('keydown', handleKeyDown, true);
     document.addEventListener('contextmenu', handleContextMenu);
     document.addEventListener('copy', handleCopy);
     document.addEventListener('cut', handleCopy);
@@ -5450,6 +5425,7 @@ const TestSession = ({ student }: { student: User }) => {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('keydown', handleKeyDown, true);
       document.removeEventListener('contextmenu', handleContextMenu);
       document.removeEventListener('copy', handleCopy);
       document.removeEventListener('cut', handleCopy);
@@ -5460,6 +5436,14 @@ const TestSession = ({ student }: { student: User }) => {
       document.removeEventListener('mozfullscreenchange', handleFullScreenChange);
       document.removeEventListener('MSFullscreenChange', handleFullScreenChange);
     };
+  }, [hasStarted, isFinished]);
+
+  useEffect(() => {
+    if (!hasStarted || isFinished) return;
+
+    const handleLogoutRequest = () => setShowExitConfirmation(true);
+    window.addEventListener('adhi-arena:request-test-logout', handleLogoutRequest);
+    return () => window.removeEventListener('adhi-arena:request-test-logout', handleLogoutRequest);
   }, [hasStarted, isFinished]);
 
   useEffect(() => {
@@ -5644,6 +5628,7 @@ const TestSession = ({ student }: { student: User }) => {
   const handleStartTest = async () => {
     const initialSeconds = timeLeft ?? (testDetails?.duration_minutes || 0) * 60;
     timerDeadlineRef.current = Date.now() + Math.max(0, initialSeconds) * 1000;
+    window.adhiArena?.exam.setActive(true);
     try {
       if (document.documentElement.requestFullscreen) {
         await document.documentElement.requestFullscreen();
@@ -5797,7 +5782,7 @@ const TestSession = ({ student }: { student: User }) => {
               </div>
               <div>
                 <h4 className="font-bold text-zinc-900">Full-Screen Mode</h4>
-                <p className="text-sm text-zinc-500">The test runs in full-screen. After 3 warnings, the next exit will result in automatic submission.</p>
+                <p className="text-sm text-zinc-500">The test runs in locked full-screen mode until you submit the test.</p>
               </div>
             </div>
             
@@ -5807,7 +5792,7 @@ const TestSession = ({ student }: { student: User }) => {
               </div>
               <div>
                 <h4 className="font-bold text-amber-900">No Tab Switching</h4>
-                <p className="text-sm text-amber-700/70">Switching tabs or windows is strictly prohibited. You will receive 3 warnings. The next violation will result in automatic submission.</p>
+                <p className="text-sm text-amber-700/70">Switching tabs, windows, and system gestures are blocked while the test is active.</p>
                 <p className="text-sm text-amber-800 mt-2 font-semibold">If a violation is recorded incorrectly, contact the test admin or invigilator.</p>
               </div>
             </div>
@@ -6653,6 +6638,48 @@ const TestSession = ({ student }: { student: User }) => {
       </div>
 
       <AnimatePresence>
+        {showExitConfirmation && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl border border-zinc-200"
+            >
+              <h3 className="text-xl font-bold text-zinc-900 mb-2">Submit and Logout?</h3>
+              <p className="text-zinc-500 mb-6">
+                Logging out during an active test will submit your current answers and exit full-screen mode.
+              </p>
+
+              <div className="flex gap-3">
+                <button 
+                  disabled={isSubmitting}
+                  onClick={() => setShowExitConfirmation(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl font-medium text-zinc-600 hover:bg-zinc-100 transition-colors disabled:opacity-50"
+                >
+                  Stay in Test
+                </button>
+                <button 
+                  disabled={isSubmitting}
+                  onClick={async () => {
+                    setShowExitConfirmation(false);
+                    await handleSubmit();
+                    window.dispatchEvent(new Event('adhi-arena:test-submitted-for-logout'));
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-xl font-bold bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Submitting...
+                    </>
+                  ) : 'Submit & Logout'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showSubmitConfirmation && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
             <motion.div 
@@ -8122,6 +8149,7 @@ export default function App() {
   const [showNetworkPanel, setShowNetworkPanel] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: 'idle' });
   const [appVersion, setAppVersion] = useState('');
+  const pendingTestLogoutRef = useRef(false);
 
   useEffect(() => {
     const unsubscribe = window.adhiArena?.updates.onStatus(setUpdateStatus);
@@ -8134,8 +8162,24 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    if (user?.role === 'student' && window.location.pathname.includes('/student/test/')) {
+      pendingTestLogoutRef.current = true;
+      window.dispatchEvent(new Event('adhi-arena:request-test-logout'));
+      return;
+    }
     setUser(null);
   };
+
+  useEffect(() => {
+    const completeTestLogout = () => {
+      if (!pendingTestLogoutRef.current) return;
+      pendingTestLogoutRef.current = false;
+      setUser(null);
+    };
+
+    window.addEventListener('adhi-arena:test-submitted-for-logout', completeTestLogout);
+    return () => window.removeEventListener('adhi-arena:test-submitted-for-logout', completeTestLogout);
+  }, []);
 
   const handleCheckUpdates = async () => {
     if (!window.adhiArena?.updates) {

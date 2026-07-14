@@ -66,6 +66,23 @@ function sendDownloadedUpdateStatus(message) {
   });
 }
 
+function applyExamLock(active) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  examActive = Boolean(active);
+  mainWindow.setContentProtection(examActive);
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
+  mainWindow.setAlwaysOnTop(examActive, examActive ? "screen-saver" : "normal");
+  mainWindow.setFullScreen(examActive);
+  mainWindow.setKiosk(examActive);
+
+  if (examActive) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
 function findAvailablePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -139,6 +156,67 @@ function installZoomControls(window) {
     event.preventDefault();
     const direction = zoomDirection === "in" ? 1 : -1;
     applyZoom(window.webContents.getZoomFactor() + direction * zoomStep);
+  });
+}
+
+function installExamWindowLock(window) {
+  window.on("close", (event) => {
+    if (!examActive) return;
+    event.preventDefault();
+    window.show();
+    window.focus();
+  });
+
+  window.on("minimize", (event) => {
+    if (!examActive) return;
+    event.preventDefault();
+    window.restore();
+    window.focus();
+  });
+
+  window.on("leave-full-screen", () => {
+    if (!examActive) return;
+    setImmediate(() => applyExamLock(true));
+  });
+
+  window.on("blur", () => {
+    if (!examActive) return;
+    setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed() || !examActive) return;
+      mainWindow.show();
+      mainWindow.focus();
+    }, 100);
+  });
+
+  window.webContents.on("before-input-event", (event, input) => {
+    if (!examActive || input.type !== "keyDown") return;
+
+    const key = String(input.key || "").toLowerCase();
+    const code = String(input.code || "").toLowerCase();
+    const hasModifier = input.control || input.meta || input.alt;
+    const blockedKeys = new Set([
+      "escape",
+      "f11",
+      "f4",
+      "tab",
+      "browserback",
+      "browserforward",
+      "mediaplaypause",
+      "volumeup",
+      "volumedown",
+      "volumemute",
+    ]);
+    const blockedCodes = new Set(["f11", "f4", "tab", "escape"]);
+    const blockedModifierKeys = new Set(["r", "w", "q", "n", "t", "f4", "tab", "escape"]);
+
+    if (
+      blockedKeys.has(key) ||
+      blockedCodes.has(code) ||
+      (hasModifier && blockedModifierKeys.has(key))
+    ) {
+      event.preventDefault();
+      window.focus();
+    }
   });
 }
 
@@ -344,7 +422,7 @@ ipcMain.handle("updates:install", async () => {
   return { ok: true };
 });
 ipcMain.on("exam:set-active", (_event, active) => {
-  examActive = Boolean(active);
+  applyExamLock(Boolean(active));
   if (!examActive) {
     if (downloadedUpdateInfo) {
       sendDownloadedUpdateStatus();
@@ -397,6 +475,7 @@ async function createWindow() {
   });
   mainWindow = window;
   installZoomControls(window);
+  installExamWindowLock(window);
   window.once("ready-to-show", () => window.show());
   await window.loadURL(`http://127.0.0.1:${port}`);
   setupAutoUpdater(window);
