@@ -96,10 +96,6 @@ function mergeNetworkLists(visibleNetworks, profiles, connectedSsid) {
     });
   }
 
-  for (const ssid of profiles) {
-    if (!bySsid.has(ssid)) bySsid.set(ssid, profileNetwork(ssid, connectedSsid));
-  }
-
   if (connectedSsid && !bySsid.has(connectedSsid)) {
     bySsid.set(connectedSsid, profileNetwork(connectedSsid, connectedSsid));
   }
@@ -162,7 +158,7 @@ async function scanNetworks() {
       networks,
       locationPermissionRequired,
       message: locationPermissionRequired
-        ? "Windows Location Services must be enabled to scan nearby Wi-Fi networks. Saved networks are shown below."
+        ? "Windows Location Services must be enabled to scan nearby Wi-Fi networks."
         : "",
     };
   } catch (error) {

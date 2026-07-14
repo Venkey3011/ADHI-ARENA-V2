@@ -2555,6 +2555,7 @@ const AdminDashboard = () => {
   const [selectedSubmissionProblems, setSelectedSubmissionProblems] = useState<CodingProblem[]>([]);
   const [selectedSubmissionQuestions, setSelectedSubmissionQuestions] = useState<Question[]>([]);
   const [resultsSearchQuery, setResultsSearchQuery] = useState('');
+  const [isResultsRefreshing, setIsResultsRefreshing] = useState(false);
 
   const parsedResponses = useMemo(() => {
     if (!selectedSubmission || !selectedSubmission.responses) return {};
@@ -2612,7 +2613,7 @@ const AdminDashboard = () => {
   }, []);
 
   useEffect(() => {
-    const syncResults = window.setInterval(fetchResults, 60_000);
+    const syncResults = window.setInterval(fetchResults, 30_000);
     return () => window.clearInterval(syncResults);
   }, []);
 
@@ -2628,7 +2629,8 @@ const AdminDashboard = () => {
     }
   };
 
-  const fetchResults = async () => {
+  const fetchResults = async (showRefreshing = false) => {
+    if (showRefreshing) setIsResultsRefreshing(true);
     try {
       const res = await fetch('/api/results');
       if (res.ok) {
@@ -2641,6 +2643,8 @@ const AdminDashboard = () => {
       }
     } catch (error) {
       console.error('Failed to fetch results:', error);
+    } finally {
+      if (showRefreshing) setIsResultsRefreshing(false);
     }
   };
 
@@ -2814,10 +2818,12 @@ const AdminDashboard = () => {
               Comprehensive Results Management
             </h2>
             <button 
-              onClick={fetchResults}
-              className="flex items-center gap-2 text-sm font-medium text-indigo-600 hover:text-indigo-700"
+              onClick={() => fetchResults(true)}
+              disabled={isResultsRefreshing}
+              className="flex items-center gap-2 text-sm font-medium text-indigo-600 hover:text-indigo-700 disabled:opacity-60"
             >
-              <RefreshCw className="w-4 h-4" /> Refresh
+              <RefreshCw className={cn("w-4 h-4", isResultsRefreshing && "animate-spin")} />
+              {isResultsRefreshing ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
 
@@ -4241,6 +4247,7 @@ const TestManagement = () => {
   const [activeTab, setActiveTab] = useState<'questions' | 'leaderboard'>('questions');
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
+  const [leaderboardSearchQuery, setLeaderboardSearchQuery] = useState('');
   const [newQ, setNewQ] = useState({
     text: '',
     options: ['', '', '', ''],
@@ -4300,7 +4307,7 @@ const TestManagement = () => {
   };
 
   const handleExportExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(results.map((r, i) => ({
+    const ws = XLSX.utils.json_to_sheet(filteredLeaderboardResults.map((r, i) => ({
       Rank: i + 1,
       'Student Name': r.student_name,
       'Student ID': r.student_id,
@@ -4313,6 +4320,16 @@ const TestManagement = () => {
     XLSX.utils.book_append_sheet(wb, ws, "Leaderboard");
     XLSX.writeFile(wb, `leaderboard_test_${id}.xlsx`);
   };
+
+  const filteredLeaderboardResults = results.filter(result => {
+    const query = leaderboardSearchQuery.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      result.student_name?.toLowerCase().includes(query) ||
+      result.student_id?.toLowerCase().includes(query) ||
+      result.student_department?.toLowerCase().includes(query)
+    );
+  });
 
   const handleGenerateQuestions = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4496,13 +4513,25 @@ const TestManagement = () => {
         )}
 
         {activeTab === 'leaderboard' && (
-          <button 
-            onClick={handleExportExcel}
-            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 transition-all shadow-sm"
-          >
-            <FileSpreadsheet className="w-5 h-5" />
-            Export to Excel
-          </button>
+          <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+              <input 
+                type="text"
+                placeholder="Search leaderboard..."
+                value={leaderboardSearchQuery}
+                onChange={(e) => setLeaderboardSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
+              />
+            </div>
+            <button 
+              onClick={handleExportExcel}
+              className="flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 transition-all shadow-sm"
+            >
+              <FileSpreadsheet className="w-5 h-5" />
+              Export to Excel
+            </button>
+          </div>
         )}
       </div>
 
@@ -4578,7 +4607,7 @@ const TestManagement = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {results.map((result, index) => (
+                {filteredLeaderboardResults.map((result, index) => (
                   <tr key={result.id} className="hover:bg-zinc-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-zinc-900">
                       <div className={cn(
@@ -4607,10 +4636,10 @@ const TestManagement = () => {
                     </td>
                   </tr>
                 ))}
-                {results.length === 0 && (
+                {filteredLeaderboardResults.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center text-zinc-400">
-                      No results available yet.
+                      {leaderboardSearchQuery ? 'No leaderboard entries match your search.' : 'No results available yet.'}
                     </td>
                   </tr>
                 )}
