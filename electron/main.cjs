@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } = require("electron");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const http = require("http");
@@ -12,6 +12,7 @@ let examActive = false;
 let pendingUpdateInfo = null;
 let downloadedUpdateInfo = null;
 let updateDialogOpen = false;
+let examLockWatchdog = null;
 let autoUpdater;
 
 const RELEASE_WORKFLOW_URL =
@@ -70,6 +71,8 @@ function applyExamLock(active) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   examActive = Boolean(active);
+  configureExamGlobalShortcuts(examActive);
+  configureExamLockWatchdog(examActive);
   mainWindow.setContentProtection(examActive);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
@@ -80,6 +83,55 @@ function applyExamLock(active) {
   if (examActive) {
     mainWindow.show();
     mainWindow.focus();
+  }
+}
+
+function keepExamWindowLocked() {
+  if (!mainWindow || mainWindow.isDestroyed() || !examActive) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
+  if (!mainWindow.isKiosk()) mainWindow.setKiosk(true);
+  mainWindow.setAlwaysOnTop(true, "screen-saver");
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function configureExamLockWatchdog(active) {
+  if (examLockWatchdog) {
+    clearInterval(examLockWatchdog);
+    examLockWatchdog = null;
+  }
+  if (!active) return;
+  examLockWatchdog = setInterval(keepExamWindowLocked, 250);
+  examLockWatchdog.unref?.();
+}
+
+function configureExamGlobalShortcuts(active) {
+  globalShortcut.unregisterAll();
+  if (!active) return;
+
+  const shortcuts = [
+    "Super+Tab",
+    "Super+D",
+    "Super+M",
+    "Super+R",
+    "Super+E",
+    "Super+L",
+    "Super+Ctrl+D",
+    "Super+Ctrl+Left",
+    "Super+Ctrl+Right",
+    "Alt+Tab",
+    "Alt+F4",
+    "CommandOrControl+Escape",
+    "CommandOrControl+Shift+Escape",
+  ];
+
+  for (const shortcut of shortcuts) {
+    try {
+      globalShortcut.register(shortcut, keepExamWindowLocked);
+    } catch {
+      // Windows reserves some shell shortcuts; kiosk/watchdog still pulls focus back.
+    }
   }
 }
 
@@ -181,11 +233,7 @@ function installExamWindowLock(window) {
 
   window.on("blur", () => {
     if (!examActive) return;
-    setTimeout(() => {
-      if (!mainWindow || mainWindow.isDestroyed() || !examActive) return;
-      mainWindow.show();
-      mainWindow.focus();
-    }, 100);
+    setImmediate(keepExamWindowLocked);
   });
 
   window.webContents.on("before-input-event", (event, input) => {
@@ -490,6 +538,8 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   app.isQuitting = true;
+  configureExamLockWatchdog(false);
+  globalShortcut.unregisterAll();
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
 });
 
