@@ -11,10 +11,37 @@ let client: MongoClient | null = null;
 
 let db: any;
 
+function normalizeJudgeOutput(value: any) {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n+$/g, "");
+}
+
+async function closeMongoClient() {
+  if (!client) return;
+  try {
+    await client.close();
+  } catch (error) {
+    console.error("MongoDB close error:", error);
+  } finally {
+    client = null;
+    db = null;
+  }
+}
+
 async function connectDB() {
   try {
     console.log("Connecting to MongoDB...");
     client = new MongoClient(uri, {
+      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE || 5),
+      minPoolSize: 0,
+      maxIdleTimeMS: 30_000,
+      serverSelectionTimeoutMS: 10_000,
+      connectTimeoutMS: 10_000,
       serverApi: {
         version: ServerApiVersion.v1,
         deprecationErrors: true,
@@ -888,8 +915,9 @@ async function startServer() {
         // Process sequentially to be gentle on free APIs
         for (const tc of testCases) {
           const exec = await universalExecute(code, language, (tc.input || "").toString());
-          const expected = (tc.expected_output || "").trim();
-          const isPassed = exec.status === 0 && exec.stdout === expected;
+          const expected = normalizeJudgeOutput(tc.expected_output);
+          const actual = normalizeJudgeOutput(exec.stdout);
+          const isPassed = exec.status === 0 && actual === expected;
 
           results.push({
             status: isPassed ? 'Passed' : (exec.status === -1 && !exec.stdout ? 'Error' : 'Failed'),
@@ -1208,12 +1236,15 @@ async function startServer() {
         const results = [];
         for (const tc of testCasesToRun) {
           const exec = await universalExecute(code, language, (tc.input || "").toString());
-          const expected = (tc.expected_output || "").trim();
-          const isPassed = exec.status === 0 && exec.stdout === expected;
+          const expected = normalizeJudgeOutput(tc.expected_output);
+          const actual = normalizeJudgeOutput(exec.stdout);
+          const isPassed = exec.status === 0 && actual === expected;
 
           results.push({
             input: tc.input,
-            expected: expected,
+            expected: tc.expected_output ?? "",
+            normalized_expected: expected,
+            normalized_actual: actual,
             actual: exec.stdout || exec.stderr || exec.error || (exec.status !== 0 ? `Error (Status ${exec.status})` : ""),
             success: isPassed,
             is_hidden: tc.is_hidden,
@@ -1260,5 +1291,13 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+process.once("SIGINT", () => {
+  closeMongoClient().finally(() => process.exit(0));
+});
+
+process.once("SIGTERM", () => {
+  closeMongoClient().finally(() => process.exit(0));
+});
 
 startServer();
