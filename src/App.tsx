@@ -70,6 +70,17 @@ const DEPARTMENTS = [
   'Mech'
 ];
 
+const formatLanguageLabel = (language: string) =>
+  language === 'python'
+    ? 'Python 3'
+    : language === 'javascript'
+      ? 'JavaScript'
+      : language === 'java'
+        ? 'Java'
+        : language === 'cpp'
+          ? 'C++'
+          : 'C';
+
 const getCodingEvaluationStatus = (
   detail: Pick<CodingResultDetail, 'test_cases_passed' | 'total_test_cases'>
 ): 'Accepted' | 'Partially Accepted' | 'Failed' => {
@@ -4248,6 +4259,8 @@ const TestManagement = () => {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
   const [leaderboardSearchQuery, setLeaderboardSearchQuery] = useState('');
+  const [leaderboardPageSize, setLeaderboardPageSize] = useState(25);
+  const [leaderboardPage, setLeaderboardPage] = useState(1);
   const [newQ, setNewQ] = useState({
     text: '',
     options: ['', '', '', ''],
@@ -4330,6 +4343,17 @@ const TestManagement = () => {
       result.student_department?.toLowerCase().includes(query)
     );
   });
+
+  const leaderboardTotalPages = Math.max(1, Math.ceil(filteredLeaderboardResults.length / leaderboardPageSize));
+  const boundedLeaderboardPage = Math.min(leaderboardPage, leaderboardTotalPages);
+  const paginatedLeaderboardResults = filteredLeaderboardResults.slice(
+    (boundedLeaderboardPage - 1) * leaderboardPageSize,
+    boundedLeaderboardPage * leaderboardPageSize
+  );
+
+  useEffect(() => {
+    setLeaderboardPage(1);
+  }, [leaderboardSearchQuery, leaderboardPageSize, id]);
 
   const handleGenerateQuestions = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4524,6 +4548,16 @@ const TestManagement = () => {
                 className="w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
               />
             </div>
+            <select
+              value={leaderboardPageSize}
+              onChange={(e) => setLeaderboardPageSize(Number(e.target.value))}
+              className="px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm font-medium text-zinc-700 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm"
+              title="Rows per page"
+            >
+              {[10, 25, 50, 100].map(count => (
+                <option key={count} value={count}>{count} rows</option>
+              ))}
+            </select>
             <button 
               onClick={handleExportExcel}
               className="flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 transition-all shadow-sm"
@@ -4607,17 +4641,17 @@ const TestManagement = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {filteredLeaderboardResults.map((result, index) => (
+                {paginatedLeaderboardResults.map((result, index) => (
                   <tr key={result.id} className="hover:bg-zinc-50 transition-colors">
                     <td className="px-6 py-4 font-medium text-zinc-900">
                       <div className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center font-bold",
-                        index === 0 ? "bg-yellow-100 text-yellow-700" :
-                        index === 1 ? "bg-zinc-100 text-zinc-700" :
-                        index === 2 ? "bg-orange-100 text-orange-700" :
+                        ((boundedLeaderboardPage - 1) * leaderboardPageSize + index) === 0 ? "bg-yellow-100 text-yellow-700" :
+                        ((boundedLeaderboardPage - 1) * leaderboardPageSize + index) === 1 ? "bg-zinc-100 text-zinc-700" :
+                        ((boundedLeaderboardPage - 1) * leaderboardPageSize + index) === 2 ? "bg-orange-100 text-orange-700" :
                         "text-zinc-500"
                       )}>
-                        {index + 1}
+                        {(boundedLeaderboardPage - 1) * leaderboardPageSize + index + 1}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-zinc-900 font-medium">{result.student_name}</td>
@@ -4646,6 +4680,38 @@ const TestManagement = () => {
               </tbody>
             </table>
           </div>
+          {filteredLeaderboardResults.length > 0 && (
+            <div className="px-6 py-4 border-t border-zinc-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-zinc-500">
+              <span>
+                Showing {(boundedLeaderboardPage - 1) * leaderboardPageSize + 1}
+                {' - '}
+                {Math.min(boundedLeaderboardPage * leaderboardPageSize, filteredLeaderboardResults.length)}
+                {' of '}
+                {filteredLeaderboardResults.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={boundedLeaderboardPage <= 1}
+                  onClick={() => setLeaderboardPage(page => Math.max(1, page - 1))}
+                  className="px-3 py-1.5 rounded-lg border border-zinc-200 font-semibold text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                <span className="px-2 font-semibold text-zinc-600">
+                  Page {boundedLeaderboardPage} / {leaderboardTotalPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={boundedLeaderboardPage >= leaderboardTotalPages}
+                  onClick={() => setLeaderboardPage(page => Math.min(leaderboardTotalPages, page + 1))}
+                  className="px-3 py-1.5 rounded-lg border border-zinc-200 font-semibold text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -5252,6 +5318,7 @@ const TestSession = ({ student }: { student: User }) => {
   const [submissionSaveError, setSubmissionSaveError] = useState<string | null>(null);
   const [isRetryAttempt, setIsRetryAttempt] = useState(false);
   const [compilerAvailability, setCompilerAvailability] = useState<Record<string, boolean>>({});
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const timerDeadlineRef = useRef<number | null>(null);
   const monacoEditorReadyRef = useRef(false);
   const currentTimestamp = useCurrentTimestamp();
@@ -5378,6 +5445,14 @@ const TestSession = ({ student }: { student: User }) => {
       setIsSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (!isFinished || !submissionSaveError || isSubmitting) return;
+    const retryTimer = window.setInterval(() => {
+      retryPendingSubmission();
+    }, 15_000);
+    return () => window.clearInterval(retryTimer);
+  }, [isFinished, submissionSaveError, isSubmitting, pendingSubmissionKey]);
 
   const handleSubmitRef = useRef<() => void>(handleSubmit);
 
@@ -5602,6 +5677,10 @@ const TestSession = ({ student }: { student: User }) => {
   }, [codingSolutions, codingDraftKey, hasStarted, isFinished, testDetails?.type]);
 
   useEffect(() => {
+    setLanguageMenuOpen(false);
+  }, [currentIdx]);
+
+  useEffect(() => {
     if (isFinished || !hasStarted) return;
 
     if (timerDeadlineRef.current === null) {
@@ -5728,7 +5807,30 @@ const TestSession = ({ student }: { student: User }) => {
 
   const currentQ = questions[currentIdx];
   const currentP = (problems || [])[currentIdx];
+  const allowedCodingLanguages = testDetails?.allowed_languages || ['python', 'javascript', 'java', 'c', 'cpp'];
+  const selectedCodingLanguage = currentP
+    ? (codingSolutions[currentP.id]?.language || allowedCodingLanguages[0] || 'python')
+    : (allowedCodingLanguages[0] || 'python');
   const usePlainCodeEditor = forcePlainCodeEditor || monacoLoadTimedOut;
+
+  const changeCurrentProblemLanguage = (newLang: string) => {
+    if (!currentP || compilerAvailability[newLang] === false) return;
+    const currentCode = codingSolutions[currentP.id]?.code || '';
+    const oldLang = codingSolutions[currentP.id]?.language || '';
+    const newCode = !currentCode.trim() || currentCode === getCodeTemplate(oldLang)
+      ? getCodeTemplate(newLang)
+      : currentCode;
+
+    setCodingSolutions({
+      ...codingSolutions,
+      [currentP.id]: {
+        ...codingSolutions[currentP.id],
+        language: newLang,
+        code: newCode
+      }
+    });
+    setLanguageMenuOpen(false);
+  };
 
   useEffect(() => {
     if (currentP && !codingSolutions[currentP.id]?.code) {
@@ -6196,37 +6298,43 @@ const TestSession = ({ student }: { student: User }) => {
                     <div className="bg-[#1e1e1e] border border-zinc-800 rounded-2xl shadow-xl flex flex-col flex-1 min-h-[380px] overflow-hidden">
                       <div className="p-3.5 border-b border-zinc-800 flex flex-wrap justify-between items-center gap-3 bg-[#252525]">
                         <div className="flex flex-wrap items-center gap-3">
-                          <select 
-                            value={codingSolutions[currentP.id]?.language || (testDetails?.allowed_languages?.[0] || 'python')}
-                            onChange={(e) => {
-                              const newLang = e.target.value;
-                              const currentCode = codingSolutions[currentP.id]?.code || '';
-                              const oldLang = codingSolutions[currentP.id]?.language || '';
-                              
-                              // Update code to template if current code is empty or matches old template
-                              let newCode = currentCode;
-                              if (!currentCode.trim() || currentCode === getCodeTemplate(oldLang)) {
-                                newCode = getCodeTemplate(newLang);
-                              }
-
-                              setCodingSolutions({
-                                ...codingSolutions,
-                                [currentP.id]: {
-                                  ...codingSolutions[currentP.id],
-                                  language: newLang,
-                                  code: newCode
-                                }
-                              });
-                            }}
-                            className="bg-[#2d2d2d] text-zinc-300 px-3 py-1.5 rounded-lg border border-zinc-700 text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
-                          >
-                            {(testDetails?.allowed_languages || ['python', 'javascript', 'java', 'c', 'cpp']).map(lang => (
-                               <option key={lang} value={lang} disabled={compilerAvailability[lang] === false}>
-                                 {lang === 'python' ? 'Python 3' : lang === 'javascript' ? 'JavaScript' : lang === 'java' ? 'Java' : lang === 'cpp' ? 'C++' : 'C'}
-                                 {compilerAvailability[lang] === false ? ' (not installed)' : ''}
-                               </option>
-                            ))}
-                          </select>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => setLanguageMenuOpen(open => !open)}
+                              className="bg-[#2d2d2d] text-zinc-300 px-3 py-1.5 rounded-lg border border-zinc-700 text-sm focus:ring-1 focus:ring-indigo-500 outline-none flex items-center gap-2 min-w-36 justify-between"
+                            >
+                              <span>{formatLanguageLabel(selectedCodingLanguage)}</span>
+                              <ChevronDown className={cn("w-4 h-4 transition-transform", languageMenuOpen && "rotate-180")} />
+                            </button>
+                            {languageMenuOpen && (
+                              <div className="absolute left-0 top-full mt-2 z-[90] w-48 rounded-xl border border-zinc-700 bg-[#252525] shadow-2xl overflow-hidden">
+                                {allowedCodingLanguages.map(lang => {
+                                  const disabled = compilerAvailability[lang] === false;
+                                  const selected = selectedCodingLanguage === lang;
+                                  return (
+                                    <button
+                                      key={lang}
+                                      type="button"
+                                      disabled={disabled}
+                                      onClick={() => changeCurrentProblemLanguage(lang)}
+                                      className={cn(
+                                        "w-full px-3 py-2 text-left text-sm flex items-center justify-between transition-colors",
+                                        selected ? "bg-indigo-600 text-white" : "text-zinc-300 hover:bg-zinc-700/70",
+                                        disabled && "opacity-45 cursor-not-allowed hover:bg-transparent"
+                                      )}
+                                    >
+                                      <span>
+                                        {formatLanguageLabel(lang)}
+                                        {disabled ? ' (not installed)' : ''}
+                                      </span>
+                                      {selected && <Check className="w-4 h-4" />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
                           <div className="h-4 w-[1px] bg-zinc-800" />
                           <div className="flex items-center gap-2 bg-[#2d2d2d] px-2 py-1 rounded-lg border border-zinc-700">
                              <button 

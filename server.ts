@@ -67,6 +67,12 @@ async function connectDB() {
 
     // Create indexes
     await users.createIndex({ student_id: 1 }, { unique: true, sparse: true });
+    const results = db.collection("results");
+    await results.createIndex(
+      { client_submission_id: 1 },
+      { unique: true, partialFilterExpression: { client_submission_id: { $type: "string" } } }
+    );
+    await results.createIndex({ test_id: 1, student_id: 1, completed_at: -1 });
     
   } catch (error) {
     console.error("MongoDB connection error:", error);
@@ -1023,6 +1029,16 @@ async function startServer() {
           coding_details: processedCodingDetails
         });
       } catch (e: any) {
+        if (e?.code === 11000 && client_submission_id) {
+          const existing = await db.collection("results").findOne({ client_submission_id });
+          if (existing) {
+            return res.json({
+              id: existing._id.toString(),
+              score: existing.score,
+              coding_details: existing.coding_details || []
+            });
+          }
+        }
         console.error("Submit results error:", e);
         res.status(500).json({ error: e.message });
       }
@@ -1119,8 +1135,10 @@ async function startServer() {
     app.get("/api/tests/:id/results", async (req, res) => {
       const { id } = req.params;
       try {
+        const idMatches: any[] = [{ test_id: id }];
+        if (ObjectId.isValid(id)) idMatches.push({ test_id: new ObjectId(id) });
         const results = await db.collection("results").aggregate([
-          { $match: { test_id: id } },
+          { $match: { $or: idMatches } },
           {
             $lookup: {
               from: "tests",
