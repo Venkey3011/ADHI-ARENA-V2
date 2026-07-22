@@ -53,7 +53,8 @@ import {
   Rocket,
   ExternalLink,
   Maximize2,
-  Minimize2
+  Minimize2,
+  MonitorPlay
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -2758,6 +2759,13 @@ const AdminDashboard = () => {
         </div>
         <div className="flex items-center gap-3">
           <button 
+            onClick={() => navigate('/admin/preview')}
+            className="flex items-center gap-2 bg-white text-indigo-600 border border-indigo-100 px-4 py-2 rounded-lg font-medium hover:bg-indigo-50 transition-all shadow-sm"
+          >
+            <MonitorPlay className="w-5 h-5" />
+            Test Pages
+          </button>
+          <button 
             onClick={() => setIsCreating(true)}
             className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-all shadow-sm"
           >
@@ -5029,13 +5037,15 @@ const TestManagement = () => {
   );
 };
 
-const StudentDashboard = ({ student }: { student: User }) => {
+const StudentDashboard = ({ student, previewMode = false }: { student: User; previewMode?: boolean }) => {
   const [tests, setTests] = useState<Test[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const currentTimestamp = useCurrentTimestamp();
+  const testPath = (testId: string) => previewMode ? `/admin/preview/test/${testId}` : `/student/test/${testId}`;
+  const resultPath = (testId: string) => previewMode ? `/admin/preview/test/${testId}` : `/student/results/${testId}`;
 
   const retryPendingSubmissions = async () => {
     const studentId = getStudentKey(student);
@@ -5068,10 +5078,14 @@ const StudentDashboard = ({ student }: { student: User }) => {
     const studentId = getStudentKey(student);
     
     try {
-      await retryPendingSubmissions();
+      if (!previewMode) {
+        await retryPendingSubmissions();
+      }
       const [testsRes, resultsRes] = await Promise.all([
         fetch(`/api/tests?batch=${encodeURIComponent(student.batch)}`),
-        fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`)
+        previewMode
+          ? Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+          : fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`)
       ]);
       
       if (!testsRes.ok || !resultsRes.ok) throw new Error('Failed to fetch data');
@@ -5090,7 +5104,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
 
   useEffect(() => {
     fetchData();
-  }, [student.batch, student.student_id, student.id, location.key, location.state]);
+  }, [student.batch, student.student_id, student.id, location.key, location.state, previewMode]);
 
   const getResultForTest = (testId: string) => {
     if (!results || !Array.isArray(results)) return null;
@@ -5194,13 +5208,13 @@ const StudentDashboard = ({ student }: { student: User }) => {
                         </div>
                         <div className="flex gap-2">
                           <button 
-                            onClick={() => navigate(`/student/results/${test.id}`)}
+                            onClick={() => navigate(resultPath(test.id))}
                             className="flex-1 bg-emerald-600 text-white py-2.5 rounded-xl font-semibold hover:bg-emerald-700 transition-colors shadow-sm flex items-center justify-center gap-2"
                           >
                             View Result
                           </button>
                           <button 
-                            onClick={() => navigate(`/student/test/${test.id}`)}
+                            onClick={() => navigate(testPath(test.id))}
                             disabled={!contestEnded}
                             title={contestEnded ? 'Retry this test' : 'Try Again becomes available after the contest ends'}
                             className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2 text-sm disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
@@ -5211,7 +5225,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
                       </div>
                     ) : (
                       <button 
-                        onClick={() => navigate(`/student/test/${test.id}`)}
+                        onClick={() => navigate(testPath(test.id))}
                         className="w-full bg-indigo-600 text-white py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm flex items-center justify-center gap-2"
                       >
                         Start Test <ChevronRight className="w-4 h-4" />
@@ -5253,7 +5267,7 @@ const StudentDashboard = ({ student }: { student: User }) => {
                     <div className="flex justify-between items-center text-xs text-zinc-500 mt-2">
                       <span>{new Date(result.completed_at).toLocaleDateString()}</span>
                       <button 
-                        onClick={() => navigate(`/student/results/${result.test_id}`)}
+                        onClick={() => navigate(resultPath(result.test_id))}
                         className="text-indigo-600 font-medium hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         View Details
@@ -5281,7 +5295,176 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return newArray;
 };
 
-const TestSession = ({ student }: { student: User }) => {
+const AdminPreviewPage = () => {
+  const navigate = useNavigate();
+  const [tests, setTests] = useState<Test[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [batches, setBatches] = useState<string[]>([]);
+  const [selectedBatch, setSelectedBatch] = useState('All');
+  const [selectedUserId, setSelectedUserId] = useState('');
+
+  useEffect(() => {
+    const loadPreviewData = async () => {
+      try {
+        const [testsRes, usersRes, batchesRes] = await Promise.all([
+          fetch('/api/tests'),
+          fetch('/api/users'),
+          fetch('/api/batches')
+        ]);
+        if (testsRes.ok) setTests(await testsRes.json());
+        if (usersRes.ok) {
+          const data = await usersRes.json();
+          setUsers(Array.isArray(data) ? data : []);
+        }
+        if (batchesRes.ok) {
+          const data = await batchesRes.json();
+          setBatches(Array.isArray(data) ? data : []);
+          if (Array.isArray(data) && data.length > 0) setSelectedBatch(current => current || data[0]);
+        }
+      } catch (error) {
+        console.error('Failed to load admin preview data:', error);
+      }
+    };
+
+    loadPreviewData();
+  }, []);
+
+  const selectedUser = users.find(user => user.id === selectedUserId);
+  const previewStudent: User = selectedUser || {
+    id: 'admin-preview-student',
+    username: 'Admin Preview Student',
+    student_id: 'ADMIN-PREVIEW',
+    batch: selectedBatch,
+    department: 'Preview',
+    role: 'student'
+  };
+
+  const visibleTests = tests.filter(test => {
+    if (selectedBatch === 'All') return true;
+    return test.target_batch === 'All' || test.target_batch === selectedBatch;
+  });
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      <button 
+        onClick={() => navigate('/admin')}
+        className="flex items-center gap-2 text-zinc-500 hover:text-indigo-600 transition-colors mb-6 font-medium"
+      >
+        <ArrowLeft className="w-4 h-4" />
+        Back to Dashboard
+      </button>
+
+      <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm mb-8">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-11 h-11 rounded-xl bg-indigo-50 flex items-center justify-center">
+                <MonitorPlay className="w-6 h-6 text-indigo-600" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-zinc-900">Admin Test Preview</h1>
+                <p className="text-sm text-zinc-500">Open contests and student pages without saving results.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full lg:w-auto">
+            <select
+              value={selectedBatch}
+              onChange={(e) => {
+                setSelectedBatch(e.target.value);
+                setSelectedUserId('');
+              }}
+              className="px-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="All">All Batches</option>
+              {batches.map(batch => (
+                <option key={batch} value={batch}>{batch}</option>
+              ))}
+            </select>
+
+            <select
+              value={selectedUserId}
+              onChange={(e) => setSelectedUserId(e.target.value)}
+              className="px-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+            >
+              <option value="">Sample Student</option>
+              {users
+                .filter(user => selectedBatch === 'All' || user.batch === selectedBatch)
+                .map(user => (
+                  <option key={user.id} value={user.id}>
+                    {user.username} ({user.student_id || user.id})
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+          <div className="bg-zinc-50 rounded-xl p-4 border border-zinc-100">
+            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Previewing As</span>
+            <p className="font-bold text-zinc-900 mt-1">{previewStudent.username}</p>
+            <p className="text-sm text-zinc-500">{previewStudent.student_id}</p>
+          </div>
+          <div className="bg-zinc-50 rounded-xl p-4 border border-zinc-100">
+            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Batch</span>
+            <p className="font-bold text-zinc-900 mt-1">{previewStudent.batch}</p>
+          </div>
+          <div className="bg-zinc-50 rounded-xl p-4 border border-zinc-100">
+            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Available Contests</span>
+            <p className="font-bold text-zinc-900 mt-1">{visibleTests.length}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-8">
+        <h2 className="text-lg font-bold text-zinc-900 mb-4 flex items-center gap-2">
+          <ClipboardList className="w-5 h-5 text-indigo-600" />
+          Direct Contest Preview
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {visibleTests.map(test => (
+            <div key={test.id} className="bg-white border border-zinc-200 rounded-xl p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <h3 className="font-bold text-zinc-900">{test.title}</h3>
+                  <p className="text-xs font-bold uppercase tracking-wider text-indigo-500 mt-1">
+                    {test.type === 'coding' ? 'Coding' : 'Aptitude'} | {test.duration_minutes} mins
+                  </p>
+                </div>
+                <span className={cn(
+                  "text-[10px] px-2 py-1 rounded-full font-black uppercase tracking-wider",
+                  test.is_published ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                )}>
+                  {test.is_published ? 'Published' : 'Draft'}
+                </span>
+              </div>
+              <p className="text-sm text-zinc-500 line-clamp-2 mb-4">{test.description}</p>
+              <button
+                type="button"
+                onClick={() => navigate(`/admin/preview/test/${test.id}`)}
+                className="w-full bg-indigo-600 text-white py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2"
+              >
+                Open Preview <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+          {visibleTests.length === 0 && (
+            <div className="md:col-span-2 xl:col-span-3 py-10 text-center bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-zinc-400">
+              No contests are available for this batch.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-zinc-200 pt-8">
+        <StudentDashboard student={previewStudent} previewMode />
+      </div>
+    </div>
+  );
+};
+
+const TestSession = ({ student, previewMode = false }: { student: User; previewMode?: boolean }) => {
   const { id } = useParams();
   const navigate = useNavigate();
   
@@ -5323,9 +5506,11 @@ const TestSession = ({ student }: { student: User }) => {
   const monacoEditorReadyRef = useRef(false);
   const currentTimestamp = useCurrentTimestamp();
   const contestEnded = hasContestEnded(testDetails?.end_time, currentTimestamp);
-  const examIsActive = hasStarted && !isFinished;
+  const examIsActive = hasStarted && !isFinished && !previewMode;
   const codingDraftKey = getCodingDraftKey(id, student);
   const pendingSubmissionKey = getPendingSubmissionKey(id, student);
+  const dashboardPath = previewMode ? '/admin/preview' : '/student';
+  const resultPath = previewMode ? `/admin/preview/test/${id}` : `/student/results/${id}`;
 
   const reLockExamWindow = async () => {
     window.adhiArena?.exam.setActive(true);
@@ -5377,6 +5562,15 @@ const TestSession = ({ student }: { student: User }) => {
   });
 
   const saveSubmissionPayload = async (payload: any) => {
+    if (previewMode) {
+      setSubmissionSaveError(null);
+      return {
+        preview: true,
+        score: payload.score,
+        coding_details: payload.coding_details || []
+      };
+    }
+
     localStorage.setItem(pendingSubmissionKey, JSON.stringify({ payload, saved_at: new Date().toISOString() }));
     const res = await fetch('/api/results', {
       method: 'POST',
@@ -5452,7 +5646,7 @@ const TestSession = ({ student }: { student: User }) => {
       retryPendingSubmission();
     }, 15_000);
     return () => window.clearInterval(retryTimer);
-  }, [isFinished, submissionSaveError, isSubmitting, pendingSubmissionKey]);
+  }, [isFinished, submissionSaveError, isSubmitting, pendingSubmissionKey, previewMode]);
 
   const handleSubmitRef = useRef<() => void>(handleSubmit);
 
@@ -5461,7 +5655,7 @@ const TestSession = ({ student }: { student: User }) => {
   }, [handleSubmit]);
 
   useEffect(() => {
-    if (!hasStarted || isFinished) return;
+    if (previewMode || !hasStarted || isFinished) return;
 
     const handleVisibilityChange = () => {
       if (document.hidden && hasStarted && !isFinished) {
@@ -5537,15 +5731,15 @@ const TestSession = ({ student }: { student: User }) => {
       document.removeEventListener('mozfullscreenchange', handleFullScreenChange);
       document.removeEventListener('MSFullscreenChange', handleFullScreenChange);
     };
-  }, [hasStarted, isFinished]);
+  }, [hasStarted, isFinished, previewMode]);
 
   useEffect(() => {
-    if (!hasStarted || isFinished) return;
+    if (previewMode || !hasStarted || isFinished) return;
 
     const handleLogoutRequest = () => setShowExitConfirmation(true);
     window.addEventListener('adhi-arena:request-test-logout', handleLogoutRequest);
     return () => window.removeEventListener('adhi-arena:request-test-logout', handleLogoutRequest);
-  }, [hasStarted, isFinished]);
+  }, [hasStarted, isFinished, previewMode]);
 
   useEffect(() => {
     const studentId = (student.student_id?.trim() || student.id.toString());
@@ -5567,21 +5761,25 @@ const TestSession = ({ student }: { student: User }) => {
           return;
         }
 
-        const existingResultsRes = await fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`);
-        if (!existingResultsRes.ok) throw new Error('Failed to verify previous attempts');
-        const existingResults = await existingResultsRes.json();
-        const alreadyDone = existingResults.some((result: any) => String(result.test_id) === String(id));
+        const existingResults = previewMode
+          ? []
+          : await (async () => {
+              const existingResultsRes = await fetch(`/api/results?student_id=${encodeURIComponent(studentId)}`);
+              if (!existingResultsRes.ok) throw new Error('Failed to verify previous attempts');
+              return existingResultsRes.json();
+            })();
+        const alreadyDone = !previewMode && existingResults.some((result: any) => String(result.test_id) === String(id));
         let retryAllowed = false;
 
         if (alreadyDone) {
           if (!test.end_time) {
             alert('Try Again is unavailable because this contest has no configured end time.');
-            navigate('/student');
+            navigate(dashboardPath);
             return;
           }
           if (Date.now() < new Date(test.end_time).getTime()) {
             alert('Try Again is available only after the contest ends.');
-            navigate('/student');
+            navigate(dashboardPath);
             return;
           }
           retryAllowed = true;
@@ -5654,7 +5852,7 @@ const TestSession = ({ student }: { student: User }) => {
     };
 
     loadTest();
-  }, [id, student.student_id, student.id, navigate]);
+  }, [id, student.student_id, student.id, navigate, previewMode, dashboardPath]);
 
   useEffect(() => {
     if (!hasStarted || isFinished || testDetails?.type !== 'coding' || !codingDraftKey) return;
@@ -5708,7 +5906,7 @@ const TestSession = ({ student }: { student: User }) => {
   }, [isFinished, hasStarted, testDetails?.duration_minutes]);
 
   useEffect(() => {
-    if (!hasStarted || isFinished || isRetryAttempt || !testDetails?.end_time) return;
+    if (previewMode || !hasStarted || isFinished || isRetryAttempt || !testDetails?.end_time) return;
 
     const endAt = new Date(testDetails.end_time).getTime();
     if (!Number.isFinite(endAt)) return;
@@ -5728,18 +5926,20 @@ const TestSession = ({ student }: { student: User }) => {
     submitIfContestEnded();
     const timer = window.setInterval(submitIfContestEnded, 1000);
     return () => window.clearInterval(timer);
-  }, [hasStarted, isFinished, isRetryAttempt, testDetails?.end_time]);
+  }, [hasStarted, isFinished, isRetryAttempt, testDetails?.end_time, previewMode]);
 
   const handleStartTest = async () => {
     const initialSeconds = timeLeft ?? (testDetails?.duration_minutes || 0) * 60;
     timerDeadlineRef.current = Date.now() + Math.max(0, initialSeconds) * 1000;
-    window.adhiArena?.exam.setActive(true);
-    try {
-      if (document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen();
+    if (!previewMode) {
+      window.adhiArena?.exam.setActive(true);
+      try {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (err) {
+        console.error("Error enabling full-screen:", err);
       }
-    } catch (err) {
-      console.error("Error enabling full-screen:", err);
     }
     setHasStarted(true);
     setShowStartModal(false);
@@ -5877,7 +6077,7 @@ const TestSession = ({ student }: { student: User }) => {
           <h2 className="text-2xl font-bold text-zinc-900 mb-2">Oops!</h2>
           <p className="text-zinc-600 mb-6">{error}</p>
           <button 
-            onClick={() => navigate('/student/dashboard')}
+            onClick={() => navigate(dashboardPath)}
             className="w-full bg-zinc-100 text-zinc-600 py-3 rounded-xl font-semibold hover:bg-zinc-200 transition-colors"
           >
             Go Back
@@ -5898,7 +6098,9 @@ const TestSession = ({ student }: { student: User }) => {
           <div className="w-16 h-16 bg-indigo-100 rounded-2xl flex items-center justify-center mb-6">
             <Settings className="w-8 h-8 text-indigo-600 animate-spin-slow" />
           </div>
-          <h2 className="text-3xl font-bold text-zinc-900 mb-4">Test Instructions & Proctoring</h2>
+          <h2 className="text-3xl font-bold text-zinc-900 mb-4">
+            {previewMode ? 'Admin Test Preview' : 'Test Instructions & Proctoring'}
+          </h2>
           <p className="text-zinc-600 mb-8 leading-relaxed">
             Please read the following instructions carefully before starting the test:
           </p>
@@ -5909,8 +6111,12 @@ const TestSession = ({ student }: { student: User }) => {
                 <LayoutDashboard className="w-4 h-4 text-white" />
               </div>
               <div>
-                <h4 className="font-bold text-zinc-900">Full-Screen Mode</h4>
-                <p className="text-sm text-zinc-500">The test runs in locked full-screen mode until you submit the test.</p>
+                <h4 className="font-bold text-zinc-900">{previewMode ? 'Preview Mode' : 'Full-Screen Mode'}</h4>
+                <p className="text-sm text-zinc-500">
+                  {previewMode
+                    ? 'You can test the contest screen without saving results or affecting leaderboards.'
+                    : 'The test runs in locked full-screen mode until you submit the test.'}
+                </p>
               </div>
             </div>
             
@@ -5938,7 +6144,7 @@ const TestSession = ({ student }: { student: User }) => {
 
           <div className="flex gap-4">
             <button 
-              onClick={() => navigate('/student')}
+              onClick={() => navigate(dashboardPath)}
               className="flex-1 px-6 py-4 rounded-2xl font-bold text-zinc-600 hover:bg-zinc-100 transition-all"
             >
               Cancel
@@ -6038,14 +6244,23 @@ const TestSession = ({ student }: { student: User }) => {
             </div>
 
             <div className="flex flex-col gap-3">
-              <button 
-                onClick={() => navigate(`/student/results/${id}`)}
-                disabled={isSubmitting || Boolean(submissionSaveError)}
-                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isSubmitting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <LayoutDashboard className="w-5 h-5" />}
-                {isSubmitting ? 'Saving Result...' : submissionSaveError ? 'Result Not Saved Yet' : 'View Result'}
-              </button>
+              {!previewMode && (
+                <button 
+                  onClick={() => navigate(resultPath)}
+                  disabled={isSubmitting || Boolean(submissionSaveError)}
+                  className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <LayoutDashboard className="w-5 h-5" />}
+                  {isSubmitting ? 'Saving Result...' : submissionSaveError ? 'Result Not Saved Yet' : 'View Result'}
+                </button>
+              )}
+
+              {previewMode && (
+                <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left text-indigo-800">
+                  <p className="font-bold">Preview completed</p>
+                  <p className="text-sm mt-1 leading-relaxed">This was an admin test run. No result was saved and no leaderboard entry was created.</p>
+                </div>
+              )}
 
               {submissionSaveError && (
                 <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-left text-amber-800">
@@ -6083,16 +6298,16 @@ const TestSession = ({ student }: { student: User }) => {
                   setTimeLeft(testDetails ? testDetails.duration_minutes * 60 : null);
                   setCurrentIdx(0);
                 }}
-                disabled={!contestEnded || isSubmitting || Boolean(submissionSaveError)}
-                title={contestEnded ? 'Retry this test' : 'Try Again becomes available after the contest ends'}
+                disabled={(!previewMode && !contestEnded) || isSubmitting || Boolean(submissionSaveError)}
+                title={previewMode || contestEnded ? 'Retry this test' : 'Try Again becomes available after the contest ends'}
                 className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-5 h-5" />
-                {contestEnded ? 'Try Again' : 'Try Again (Available After Contest Ends)'}
+                {previewMode || contestEnded ? 'Try Again' : 'Try Again (Available After Contest Ends)'}
               </button>
 
               <button 
-                onClick={() => navigate('/student', { state: { refreshAfterSubmit: Date.now() } })}
+                onClick={() => navigate(dashboardPath, { state: { refreshAfterSubmit: Date.now() } })}
                 disabled={isSubmitting}
                 className="w-full bg-zinc-100 text-zinc-600 py-3 rounded-xl font-semibold hover:bg-zinc-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -8391,6 +8606,15 @@ export default function App() {
               {user.role === 'admin' ? (
                 <>
                   <Route path="/admin" element={<AdminDashboard />} />
+                  <Route path="/admin/preview" element={<AdminPreviewPage />} />
+                  <Route path="/admin/preview/test/:id" element={<TestSession student={{
+                    id: 'admin-preview-student',
+                    username: 'Admin Preview Student',
+                    student_id: 'ADMIN-PREVIEW',
+                    batch: 'All',
+                    department: 'Preview',
+                    role: 'student'
+                  }} previewMode />} />
                   <Route path="/admin/test/:id" element={<TestManagement />} />
                   <Route path="/admin/banks/:id" element={<BankQuestionsManagement />} />
                   <Route path="/admin/coding-banks/:id" element={<BankCodingProblemsManagement />} />
