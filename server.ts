@@ -1,13 +1,17 @@
 import express from "express";
 import path from "path";
+import fs from "fs/promises";
 import { MongoClient, ObjectId, ServerApiVersion } from "mongodb";
 import { executeLocal, getCompilerStatus, isLanguageSupported } from "./local-executor";
 
 const applicationDirectory = process.env.APP_ROOT || process.cwd();
+const dataDirectory = process.env.ADHI_ARENA_DATA_DIR || path.join(applicationDirectory, ".adhi-arena-data");
+const pendingResultsPath = path.join(dataDirectory, "pending-results.jsonl");
 
 const embeddedMongoUri = "mongodb+srv://admin:admin123@quizmaster-pro.nesqvfa.mongodb.net/quizmaster?retryWrites=true&w=majority&appName=QuizMaster-Pro";
 const uri = process.env.MONGO_URI || embeddedMongoUri;
 let client: MongoClient | null = null;
+let pendingResultDrainRunning = false;
 
 let db: any;
 
@@ -31,6 +35,37 @@ async function closeMongoClient() {
     client = null;
     db = null;
   }
+}
+
+async function enqueuePendingResult(payload: any, reason: string) {
+  await fs.mkdir(dataDirectory, { recursive: true });
+  await fs.appendFile(
+    pendingResultsPath,
+    `${JSON.stringify({ payload, reason, queued_at: new Date().toISOString() })}\n`,
+    "utf8"
+  );
+}
+
+async function readPendingResults() {
+  try {
+    const raw = await fs.readFile(pendingResultsPath, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function writePendingResults(items: any[]) {
+  await fs.mkdir(dataDirectory, { recursive: true });
+  if (items.length === 0) {
+    await fs.rm(pendingResultsPath, { force: true });
+    return;
+  }
+  await fs.writeFile(pendingResultsPath, items.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8");
 }
 
 async function connectDB() {
@@ -100,7 +135,9 @@ async function startServer() {
 
     // API Routes
     app.use((req, res, next) => {
+      const canQueueResultSubmission = req.method === "POST" && req.path === "/api/results";
       if (!db && req.path.startsWith('/api') && !['/api/health', '/api/system/compilers'].includes(req.path)) {
+        if (canQueueResultSubmission) return next();
         return res.status(503).json({ error: "Database connection not established. Please check server logs and MONGO_URI." });
       }
       next();
@@ -955,60 +992,62 @@ async function startServer() {
       }
     };
 
+    const getExistingResultByClientId = async (clientSubmissionId?: string) => {
+      if (!clientSubmissionId) return null;
+      return db.collection("results").findOne({ client_submission_id: clientSubmissionId });
+    };
 
-    // Results
-    app.post("/api/results", async (req, res) => {
-      const { test_id, student_name, student_id, score, total_questions, responses, coding_details, client_submission_id } = req.body;
-      
+    const submitResultPayload = async (payload: any) => {
+      if (!db) {
+        throw new Error("Database connection not established.");
+      }
+
+      const { test_id, student_name, student_id, score, total_questions, responses, coding_details, client_submission_id } = payload;
+
+      const existing = await getExistingResultByClientId(client_submission_id);
+      if (existing) {
+        return {
+          id: existing._id.toString(),
+          score: existing.score,
+          coding_details: existing.coding_details || [],
+          already_saved: true
+        };
+      }
+
+      let finalScore = score;
+      const processedCodingDetails: any[] = [];
+      const testIdMatches: any[] = [{ id: test_id }];
+      if (ObjectId.isValid(test_id)) {
+        testIdMatches.push({ _id: new ObjectId(test_id) });
+      }
+
+      const test = await db.collection("tests").findOne({ $or: testIdMatches });
+
+      if (coding_details && coding_details.length > 0) {
+        console.log(`Grading coding results for student ${student_name}...`);
+        let passedProblems = 0;
+
+        for (const cd of coding_details) {
+          const evaluation = await evaluateCodingSolution(cd.problem_id, cd.solution_code, cd.language);
+          processedCodingDetails.push({
+            problem_id: cd.problem_id,
+            problem_title: cd.problem_title,
+            solution_code: cd.solution_code,
+            language: cd.language,
+            test_cases_passed: evaluation.passed,
+            total_test_cases: evaluation.total,
+            status: evaluation.status,
+            test_case_results: evaluation.results
+          });
+          if (evaluation.passed > 0) {
+            passedProblems++;
+          }
+        }
+
+        finalScore = passedProblems;
+      }
+
       try {
-        if (client_submission_id) {
-          const existing = await db.collection("results").findOne({ client_submission_id });
-          if (existing) {
-            return res.json({
-              id: existing._id.toString(),
-              score: existing.score,
-              coding_details: existing.coding_details || []
-            });
-          }
-        }
-
-        let finalScore = score;
-        let processedCodingDetails = [];
-
-        // Fetch test details to persist metadata
-        const test = await db.collection("tests").findOne({ 
-          $or: [
-            { _id: new ObjectId(test_id) },
-            { id: test_id }
-          ]
-        });
-
-        if (coding_details && coding_details.length > 0) {
-          console.log(`Grading coding results for student ${student_name}...`);
-          let passedProblems = 0;
-
-          // Process problems one by one but keep test case batching inside evaluateCodingSolution
-          for (const cd of coding_details) {
-            const evaluation = await evaluateCodingSolution(cd.problem_id, cd.solution_code, cd.language);
-            processedCodingDetails.push({
-              problem_id: cd.problem_id,
-              problem_title: cd.problem_title,
-              solution_code: cd.solution_code,
-              language: cd.language,
-              test_cases_passed: evaluation.passed,
-              total_test_cases: evaluation.total,
-              status: evaluation.status,
-              test_case_results: evaluation.results
-            });
-            if (evaluation.passed > 0) {
-              passedProblems++;
-            }
-          }
-          
-          // Coding questions are scored as one mark when at least one test case passes.
-          finalScore = passedProblems;
-        }
-
         const result = await db.collection("results").insertOne({
           test_id,
           client_submission_id: client_submission_id || null,
@@ -1023,24 +1062,89 @@ async function startServer() {
           completed_at: new Date().toISOString()
         });
 
-        res.json({ 
+        return {
           id: result.insertedId.toString(),
           score: finalScore,
           coding_details: processedCodingDetails
-        });
+        };
       } catch (e: any) {
         if (e?.code === 11000 && client_submission_id) {
-          const existing = await db.collection("results").findOne({ client_submission_id });
-          if (existing) {
-            return res.json({
-              id: existing._id.toString(),
-              score: existing.score,
-              coding_details: existing.coding_details || []
+          const duplicate = await getExistingResultByClientId(client_submission_id);
+          if (duplicate) {
+            return {
+              id: duplicate._id.toString(),
+              score: duplicate.score,
+              coding_details: duplicate.coding_details || [],
+              already_saved: true
+            };
+          }
+        }
+        throw e;
+      }
+    };
+
+    const drainPendingResults = async () => {
+      if (pendingResultDrainRunning) return;
+      pendingResultDrainRunning = true;
+
+      try {
+        if (!db) {
+          await connectDB();
+        }
+        if (!db) return;
+
+        const queued = await readPendingResults();
+        if (queued.length === 0) return;
+
+        const failed: any[] = [];
+        for (const item of queued) {
+          try {
+            await submitResultPayload(item.payload);
+          } catch (error: any) {
+            failed.push({
+              ...item,
+              attempts: Number(item.attempts || 0) + 1,
+              last_error: error?.message || "Unable to sync queued result.",
+              last_attempt_at: new Date().toISOString()
             });
           }
         }
-        console.error("Submit results error:", e);
-        res.status(500).json({ error: e.message });
+
+        await writePendingResults(failed);
+        if (queued.length !== failed.length) {
+          console.log(`Synced ${queued.length - failed.length} queued result(s) to MongoDB.`);
+        }
+      } catch (error) {
+        console.error("Pending result drain failed:", error);
+      } finally {
+        pendingResultDrainRunning = false;
+      }
+    };
+
+    setTimeout(drainPendingResults, 5_000);
+    const pendingResultTimer = setInterval(drainPendingResults, 15_000) as any;
+    pendingResultTimer.unref?.();
+
+    // Results
+    app.post("/api/results", async (req, res) => {
+      try {
+        const response = await submitResultPayload(req.body);
+        res.json(response);
+      } catch (e: any) {
+        try {
+          await enqueuePendingResult(req.body, e?.message || "MongoDB submission failed.");
+          console.error("Result queued for MongoDB retry:", e?.message || e);
+          res.status(202).json({
+            queued: true,
+            score: req.body?.score,
+            coding_details: req.body?.coding_details || [],
+            message: "Result saved locally and will sync to MongoDB automatically."
+          });
+        } catch (queueError: any) {
+          console.error("Submit results error:", e);
+          console.error("Queue result error:", queueError);
+          res.status(500).json({ error: e?.message || queueError?.message || "Unable to save result." });
+        }
       }
     });
 

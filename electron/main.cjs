@@ -494,6 +494,7 @@ async function createWindow() {
       PORT: String(port),
       HOST: "127.0.0.1",
       APP_STATIC_DIR: staticDirectory,
+      ADHI_ARENA_DATA_DIR: app.getPath("userData"),
     },
     stdio: "ignore",
     windowsHide: true,
